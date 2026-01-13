@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  octopus-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    container_name: octopus-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - octopus-data:/data
+      - ./config:/etc/octopus:ro
+    environment:
+      - PORT=8080
+      - DATABASE_PATH=/data/octopus.db
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - SESSION_KEY=${SESSION_KEY:-change-me-in-production-too}
+      # AD Authentication (optional)
+      - AD_SERVER=${AD_SERVER:-}
+      - AD_BASE_DN=${AD_BASE_DN:-}
+      - AD_BIND_USER=${AD_BIND_USER:-}
+      - AD_BIND_PASS=${AD_BIND_PASS:-}
+      - AD_DOMAIN=${AD_DOMAIN:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - octopus-network
+
+networks:
+  octopus-network:
+    driver: bridge
+
+volumes:
+  octopus-data:
+    driver: local
