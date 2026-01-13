@@ -18,6 +18,7 @@ BOLD='\033[1m'
 PORT=5005
 GO_VERSION="1.21.13"
 GO_MIN_VERSION="1.21"
+GO_BIN="/usr/local/go/bin/go"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BINARY="$SCRIPT_DIR/octopus"
 SERVER_DIR="$SCRIPT_DIR/server"
@@ -45,10 +46,11 @@ version_ge() {
     [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
 }
 
-# Get current Go version
+# Get Go version from specific path
 get_go_version() {
-    if command -v go &> /dev/null; then
-        go version | grep -oP 'go\K[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1
+    local go_path="${1:-go}"
+    if [ -x "$go_path" ] || command -v "$go_path" &> /dev/null; then
+        "$go_path" version 2>/dev/null | grep -oP 'go\K[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1
     else
         echo "0"
     fi
@@ -56,15 +58,22 @@ get_go_version() {
 
 # Install or update Go
 install_go() {
-    local current_version=$(get_go_version)
+    # Check /usr/local/go first (preferred location)
+    local current_version=$(get_go_version "$GO_BIN")
 
     if [ "$current_version" != "0" ] && version_ge "$current_version" "$GO_MIN_VERSION"; then
         echo -e "${GREEN}[OK]${NC} Go $current_version is installed (>= $GO_MIN_VERSION required)"
+        # Make sure our Go is in PATH first
+        export PATH="/usr/local/go/bin:$PATH"
         return 0
     fi
 
-    if [ "$current_version" = "0" ]; then
+    # Check system Go as fallback
+    local system_version=$(get_go_version "go")
+    if [ "$current_version" = "0" ] && [ "$system_version" = "0" ]; then
         echo -e "${YELLOW}[INFO]${NC} Go is not installed. Installing Go $GO_VERSION..."
+    elif [ "$current_version" = "0" ]; then
+        echo -e "${YELLOW}[INFO]${NC} System Go $system_version is too old. Installing Go $GO_VERSION..."
     else
         echo -e "${YELLOW}[INFO]${NC} Go $current_version is too old. Installing Go $GO_VERSION..."
     fi
@@ -109,18 +118,15 @@ install_go() {
     cd "$SCRIPT_DIR"
     rm -rf "$tmp_dir"
 
-    # Update PATH for current session
-    export PATH=$PATH:/usr/local/go/bin
+    # Update PATH for current session - PREPEND to override any old Go
+    export PATH="/usr/local/go/bin:$PATH"
 
     # Verify installation
-    if command -v /usr/local/go/bin/go &> /dev/null; then
-        echo -e "${GREEN}[SUCCESS]${NC} Go $GO_VERSION installed successfully"
-
-        # Check if /usr/local/go/bin is in PATH
-        if [[ ":$PATH:" != *":/usr/local/go/bin:"* ]]; then
-            echo -e "${YELLOW}[NOTE]${NC} Add the following to your ~/.bashrc or ~/.profile:"
-            echo -e "       export PATH=\$PATH:/usr/local/go/bin"
-        fi
+    if [ -x "$GO_BIN" ]; then
+        local installed_version=$(get_go_version "$GO_BIN")
+        echo -e "${GREEN}[SUCCESS]${NC} Go $installed_version installed successfully"
+        echo -e "${YELLOW}[NOTE]${NC} Add the following to your ~/.bashrc or ~/.profile:"
+        echo -e "       export PATH=/usr/local/go/bin:\$PATH"
     else
         echo -e "${RED}[ERROR]${NC} Go installation failed"
         exit 1
