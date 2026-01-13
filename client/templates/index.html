@@ -102,6 +102,7 @@
                             <th>Type</th>
                             <th>Host</th>
                             <th>Datacenter</th>
+                            <th>vXRAIL</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -133,9 +134,10 @@
                 <header class="page-header">
                     <h2>Virtual Machines</h2>
                     <div class="header-actions">
-                        <select id="vm-source-filter">
+                        <select id="vm-source-filter" onchange="loadVMs()">
                             <option value="">All Sources</option>
                         </select>
+                        <button class="btn btn-secondary" onclick="showBatchEstimationModal()">Batch vXRAIL Estimation</button>
                         <button class="btn btn-secondary" onclick="syncAllSources()">Sync All</button>
                     </div>
                 </header>
@@ -198,9 +200,10 @@
                     <thead>
                         <tr>
                             <th>Type</th>
-                            <th>Job ID</th>
+                            <th>Target</th>
                             <th>Scheduled Time</th>
                             <th>Status</th>
+                            <th>Progress</th>
                             <th>Created By</th>
                             <th>Actions</th>
                         </tr>
@@ -280,13 +283,14 @@
     <!-- Modals -->
     <div id="modal-overlay" class="modal-overlay" onclick="closeModal()"></div>
 
-    <!-- Add Source Modal -->
-    <div id="add-source-modal" class="modal">
+    <!-- Add/Edit Source Modal -->
+    <div id="source-modal" class="modal">
         <div class="modal-header">
-            <h3>Add Source Environment</h3>
+            <h3 id="source-modal-title">Add Source Environment</h3>
             <button class="close-btn" onclick="closeModal()">&times;</button>
         </div>
-        <form id="add-source-form" onsubmit="addSource(event)">
+        <form id="source-form" onsubmit="saveSource(event)">
+            <input type="hidden" id="source-id">
             <div class="form-group">
                 <label for="source-name">Name</label>
                 <input type="text" id="source-name" required>
@@ -295,6 +299,7 @@
                 <label for="source-type">Type</label>
                 <select id="source-type" required>
                     <option value="vmware">VMware vCenter</option>
+                    <option value="vmware-vxrail">VMware vXRAIL</option>
                 </select>
             </div>
             <div class="form-group">
@@ -307,7 +312,7 @@
             </div>
             <div class="form-group">
                 <label for="source-password">Password</label>
-                <input type="password" id="source-password" required>
+                <input type="password" id="source-password" placeholder="Leave blank to keep existing">
             </div>
             <div class="form-group">
                 <label for="source-datacenter">Datacenter</label>
@@ -319,18 +324,19 @@
             </div>
             <div class="form-actions">
                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button type="submit" class="btn btn-primary">Add Source</button>
+                <button type="submit" class="btn btn-primary" id="source-submit-btn">Save</button>
             </div>
         </form>
     </div>
 
-    <!-- Add Target Modal -->
-    <div id="add-target-modal" class="modal">
+    <!-- Add/Edit Target Modal -->
+    <div id="target-modal" class="modal">
         <div class="modal-header">
-            <h3>Add Target Environment</h3>
+            <h3 id="target-modal-title">Add Target Environment</h3>
             <button class="close-btn" onclick="closeModal()">&times;</button>
         </div>
-        <form id="add-target-form" onsubmit="addTarget(event)">
+        <form id="target-form" onsubmit="saveTarget(event)">
+            <input type="hidden" id="target-id">
             <div class="form-group">
                 <label for="target-name">Name</label>
                 <input type="text" id="target-name" required>
@@ -349,7 +355,7 @@
             </div>
             <div class="form-actions">
                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button type="submit" class="btn btn-primary">Add Target</button>
+                <button type="submit" class="btn btn-primary" id="target-submit-btn">Save</button>
             </div>
         </form>
     </div>
@@ -401,13 +407,65 @@
     </div>
 
     <!-- Size Estimation Modal -->
-    <div id="size-estimation-modal" class="modal">
+    <div id="size-estimation-modal" class="modal" style="max-width: 700px;">
         <div class="modal-header">
             <h3>Size Estimation</h3>
             <button class="close-btn" onclick="closeModal()">&times;</button>
         </div>
         <div id="size-estimation-content">
             <!-- Populated dynamically -->
+        </div>
+    </div>
+
+    <!-- Batch Size Estimation Modal -->
+    <div id="batch-estimation-modal" class="modal" style="max-width: 900px;">
+        <div class="modal-header">
+            <h3>Batch vXRAIL Size Estimation</h3>
+            <button class="close-btn" onclick="closeModal()">&times;</button>
+        </div>
+        <div class="modal-content" style="padding: 1.5rem;">
+            <p style="margin-bottom: 1rem; color: var(--text-secondary);">
+                Estimate size reduction when migrating VMs from vXRAIL to standard storage.
+                vXRAIL VMs typically shrink 30-50% due to RAID-1 mirroring overhead.
+            </p>
+            <div class="form-group">
+                <label for="batch-source-filter">Source Environment</label>
+                <select id="batch-source-filter" onchange="loadBatchVMs()">
+                    <option value="">Select Source...</option>
+                </select>
+            </div>
+            <div id="batch-vm-list" style="max-height: 300px; overflow-y: auto; margin-bottom: 1rem;">
+                <!-- VM checkboxes populated here -->
+            </div>
+            <div class="form-actions" style="justify-content: space-between;">
+                <button type="button" class="btn btn-secondary" onclick="selectAllBatchVMs()">Select All</button>
+                <div>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="runBatchEstimation()">Estimate Selected</button>
+                </div>
+            </div>
+            <div id="batch-results" style="margin-top: 1.5rem; display: none;">
+                <h4>Results</h4>
+                <table class="data-table" id="batch-results-table">
+                    <thead>
+                        <tr>
+                            <th>VM Name</th>
+                            <th>vXRAIL Size (GB)</th>
+                            <th>Est. Actual (GB)</th>
+                            <th>Savings</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                    <tfoot>
+                        <tr style="font-weight: bold; background: var(--background);">
+                            <td>Total</td>
+                            <td id="batch-total-source">-</td>
+                            <td id="batch-total-estimated">-</td>
+                            <td id="batch-total-savings">-</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
         </div>
     </div>
 
