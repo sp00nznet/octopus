@@ -168,16 +168,14 @@ function logout() {
 // Dashboard
 async function loadDashboard() {
     try {
-        const [sources, targets, vms, migrations, schedules] = await Promise.all([
-            api.getSources(),
-            api.getTargets(),
+        const [environments, vms, migrations, schedules] = await Promise.all([
+            api.getEnvironments(),
             api.getVMs(),
             api.getMigrations(),
             api.getScheduledTasks(),
         ]);
 
-        document.getElementById('stat-sources').textContent = sources?.length || 0;
-        document.getElementById('stat-targets').textContent = targets?.length || 0;
+        document.getElementById('stat-environments').textContent = environments?.length || 0;
         document.getElementById('stat-vms').textContent = vms?.length || 0;
         document.getElementById('stat-migrations').textContent =
             migrations?.filter(m => ['syncing', 'ready', 'cutting_over'].includes(m.status)).length || 0;
