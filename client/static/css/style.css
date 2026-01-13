@@ -577,3 +577,12 @@ body.is-admin li.admin-only {
     border-radius: 0.375rem;
     font-size: 0.875rem;
 }
+
+/* Environment Tabs */
+.env-tab-content {
+    display: none;
+}
+
+.env-tab-content.active {
+    display: block;
+}
