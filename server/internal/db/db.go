@@ -22,10 +22,16 @@ func Initialize(path string) (*Database, error) {
 		return nil, err
 	}
 
-	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on")
+	// Enable WAL mode, foreign keys, and busy timeout for better concurrency
+	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&cache=shared")
 	if err != nil {
 		return nil, err
 	}
+
+	// Configure connection pool for SQLite
+	db.SetMaxOpenConns(1) // SQLite only supports one writer at a time
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0) // Keep connection open
 
 	// Test connection
 	if err := db.Ping(); err != nil {
@@ -159,13 +165,15 @@ func RunMigrations(db *Database) error {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
 
-		// Scheduled tasks (cutover/failover)
+		// Scheduled tasks (cutover/failover/scan)
 		`CREATE TABLE IF NOT EXISTS scheduled_tasks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			job_id INTEGER REFERENCES migration_jobs(id),
-			task_type TEXT NOT NULL CHECK(task_type IN ('cutover', 'failover', 'sync', 'test_failover')),
+			source_env_id INTEGER REFERENCES source_environments(id),
+			task_type TEXT NOT NULL CHECK(task_type IN ('cutover', 'failover', 'sync', 'test_failover', 'scan')),
 			scheduled_time TIMESTAMP NOT NULL,
 			status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+			progress INTEGER DEFAULT 0,
 			result TEXT,
 			created_by TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -252,13 +260,15 @@ type TargetEnvironment struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// ScheduledTask represents a scheduled cutover/failover
+// ScheduledTask represents a scheduled cutover/failover/scan
 type ScheduledTask struct {
 	ID            int64      `json:"id"`
-	JobID         int64      `json:"job_id"`
+	JobID         *int64     `json:"job_id,omitempty"`
+	SourceEnvID   *int64     `json:"source_env_id,omitempty"`
 	TaskType      string     `json:"task_type"`
 	ScheduledTime time.Time  `json:"scheduled_time"`
 	Status        string     `json:"status"`
+	Progress      int        `json:"progress"`
 	Result        string     `json:"result,omitempty"`
 	CreatedBy     string     `json:"created_by"`
 	CreatedAt     time.Time  `json:"created_at"`

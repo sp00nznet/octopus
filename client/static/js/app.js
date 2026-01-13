@@ -142,9 +142,9 @@ async function loadDashboard() {
         const migrationsBody = document.querySelector('#recent-migrations-table tbody');
         migrationsBody.innerHTML = recentMigrations.map(m => `
             <tr>
-                <td>${m.vm_name}</td>
-                <td>${m.source_name}</td>
-                <td>${m.target_name}</td>
+                <td>${m.vm_name || 'N/A'}</td>
+                <td>${m.source_name || 'N/A'}</td>
+                <td>${m.target_name || 'N/A'}</td>
                 <td><span class="status-badge status-${m.status}">${m.status}</span></td>
                 <td>
                     <div class="progress-bar">
@@ -156,13 +156,13 @@ async function loadDashboard() {
 
         // Upcoming tasks
         const upcomingTasks = (schedules || [])
-            .filter(t => t.status === 'pending')
+            .filter(t => ['pending', 'running'].includes(t.status))
             .slice(0, 5);
         const tasksBody = document.querySelector('#upcoming-tasks-table tbody');
         tasksBody.innerHTML = upcomingTasks.map(t => `
             <tr>
                 <td>${t.task_type}</td>
-                <td>${t.job_id}</td>
+                <td>${t.target_name || t.job_id || '-'}</td>
                 <td>${new Date(t.scheduled_time).toLocaleString()}</td>
                 <td><span class="status-badge status-${t.status}">${t.status}</span></td>
             </tr>
@@ -181,15 +181,17 @@ async function loadSources() {
         tbody.innerHTML = (sources || []).map(s => `
             <tr>
                 <td>${s.name}</td>
-                <td>${s.type}</td>
+                <td>${s.type === 'vmware-vxrail' ? 'VMware vXRAIL' : 'VMware vCenter'}</td>
                 <td>${s.host}</td>
                 <td>${s.datacenter || '-'}</td>
+                <td>${s.type === 'vmware-vxrail' ? '<span class="status-badge status-syncing">Yes</span>' : '-'}</td>
                 <td class="action-buttons">
+                    <button class="btn btn-small btn-secondary" onclick="editSource(${s.id})">Edit</button>
                     <button class="btn btn-small btn-secondary" onclick="syncSource(${s.id})">Sync</button>
                     <button class="btn btn-small btn-danger" onclick="deleteSource(${s.id})">Delete</button>
                 </td>
             </tr>
-        `).join('') || '<tr><td colspan="5">No source environments</td></tr>';
+        `).join('') || '<tr><td colspan="6">No source environments</td></tr>';
 
         // Update VM filter
         const filter = document.getElementById('vm-source-filter');
@@ -202,34 +204,73 @@ async function loadSources() {
 }
 
 function showAddSourceModal() {
-    document.getElementById('add-source-form').reset();
-    openModal('add-source-modal');
+    document.getElementById('source-form').reset();
+    document.getElementById('source-id').value = '';
+    document.getElementById('source-modal-title').textContent = 'Add Source Environment';
+    document.getElementById('source-submit-btn').textContent = 'Add Source';
+    document.getElementById('source-password').required = true;
+    document.getElementById('source-password').placeholder = '';
+    openModal('source-modal');
 }
 
-async function addSource(event) {
-    event.preventDefault();
+async function editSource(id) {
     try {
-        await api.createSource({
-            name: document.getElementById('source-name').value,
-            type: document.getElementById('source-type').value,
-            host: document.getElementById('source-host').value,
-            username: document.getElementById('source-username').value,
-            password: document.getElementById('source-password').value,
-            datacenter: document.getElementById('source-datacenter').value,
-            cluster: document.getElementById('source-cluster').value,
-        });
+        const source = await api.getSource(id);
+        document.getElementById('source-id').value = source.id;
+        document.getElementById('source-name').value = source.name;
+        document.getElementById('source-type').value = source.type;
+        document.getElementById('source-host').value = source.host;
+        document.getElementById('source-username').value = source.username || '';
+        document.getElementById('source-password').value = '';
+        document.getElementById('source-password').required = false;
+        document.getElementById('source-password').placeholder = 'Leave blank to keep existing';
+        document.getElementById('source-datacenter').value = source.datacenter || '';
+        document.getElementById('source-cluster').value = source.cluster || '';
+        document.getElementById('source-modal-title').textContent = 'Edit Source Environment';
+        document.getElementById('source-submit-btn').textContent = 'Save Changes';
+        openModal('source-modal');
+    } catch (error) {
+        alert('Failed to load source: ' + error.message);
+    }
+}
+
+async function saveSource(event) {
+    event.preventDefault();
+    const id = document.getElementById('source-id').value;
+    const data = {
+        name: document.getElementById('source-name').value,
+        type: document.getElementById('source-type').value,
+        host: document.getElementById('source-host').value,
+        username: document.getElementById('source-username').value,
+        datacenter: document.getElementById('source-datacenter').value,
+        cluster: document.getElementById('source-cluster').value,
+    };
+
+    const password = document.getElementById('source-password').value;
+    if (password) {
+        data.password = password;
+    }
+
+    try {
+        if (id) {
+            await api.updateSource(id, data);
+        } else {
+            data.password = password;
+            await api.createSource(data);
+        }
         closeModal();
         loadSources();
     } catch (error) {
-        alert('Failed to add source: ' + error.message);
+        alert('Failed to save source: ' + error.message);
     }
 }
 
 async function syncSource(id) {
     try {
         const result = await api.syncSource(id);
-        alert(`Synced ${result.vm_count} VMs`);
+        alert(`Sync started. ${result.vm_count || 0} VMs found.`);
         loadVMs();
+        loadSchedules();
     } catch (error) {
         alert('Failed to sync: ' + error.message);
     }
@@ -255,6 +296,7 @@ async function syncAllSources() {
         }
     }
     loadVMs();
+    loadSchedules();
 }
 
 // Targets
@@ -268,6 +310,7 @@ async function loadTargets() {
                 <td>${t.type}</td>
                 <td>${new Date(t.created_at).toLocaleDateString()}</td>
                 <td class="action-buttons">
+                    <button class="btn btn-small btn-secondary" onclick="editTarget(${t.id})">Edit</button>
                     <button class="btn btn-small btn-danger" onclick="deleteTarget(${t.id})">Delete</button>
                 </td>
             </tr>
@@ -278,9 +321,39 @@ async function loadTargets() {
 }
 
 function showAddTargetModal() {
-    document.getElementById('add-target-form').reset();
+    document.getElementById('target-form').reset();
+    document.getElementById('target-id').value = '';
+    document.getElementById('target-modal-title').textContent = 'Add Target Environment';
+    document.getElementById('target-submit-btn').textContent = 'Add Target';
     updateTargetConfigFields();
-    openModal('add-target-modal');
+    openModal('target-modal');
+}
+
+async function editTarget(id) {
+    try {
+        const target = await api.getTarget(id);
+        document.getElementById('target-id').value = target.id;
+        document.getElementById('target-name').value = target.name;
+        document.getElementById('target-type').value = target.type;
+        updateTargetConfigFields();
+
+        // Populate config fields if we have config data
+        if (target.config) {
+            const config = typeof target.config === 'string' ? JSON.parse(target.config) : target.config;
+            Object.keys(config).forEach(key => {
+                const input = document.querySelector(`#target-config-fields [name="${key}"]`);
+                if (input) {
+                    input.value = config[key];
+                }
+            });
+        }
+
+        document.getElementById('target-modal-title').textContent = 'Edit Target Environment';
+        document.getElementById('target-submit-btn').textContent = 'Save Changes';
+        openModal('target-modal');
+    } catch (error) {
+        alert('Failed to load target: ' + error.message);
+    }
 }
 
 function updateTargetConfigFields() {
@@ -299,7 +372,7 @@ function updateTargetConfigFields() {
             </div>
             <div class="form-group">
                 <label>Password</label>
-                <input type="password" name="password" required>
+                <input type="password" name="password" placeholder="Leave blank to keep existing">
             </div>
             <div class="form-group">
                 <label>Datacenter</label>
@@ -317,7 +390,7 @@ function updateTargetConfigFields() {
             </div>
             <div class="form-group">
                 <label>Secret Access Key</label>
-                <input type="password" name="secret_access_key" required>
+                <input type="password" name="secret_access_key" placeholder="Leave blank to keep existing">
             </div>
         `,
         gcp: `
@@ -331,7 +404,7 @@ function updateTargetConfigFields() {
             </div>
             <div class="form-group">
                 <label>Service Account JSON</label>
-                <textarea name="credentials" required></textarea>
+                <textarea name="credentials" placeholder="Leave blank to keep existing"></textarea>
             </div>
         `,
         azure: `
@@ -353,7 +426,7 @@ function updateTargetConfigFields() {
             </div>
             <div class="form-group">
                 <label>Client Secret</label>
-                <input type="password" name="client_secret" required>
+                <input type="password" name="client_secret" placeholder="Leave blank to keep existing">
             </div>
         `,
     };
@@ -361,28 +434,36 @@ function updateTargetConfigFields() {
     container.innerHTML = fields[type] || '';
 }
 
-async function addTarget(event) {
+async function saveTarget(event) {
     event.preventDefault();
-    const form = event.target;
+    const id = document.getElementById('target-id').value;
     const type = document.getElementById('target-type').value;
 
     // Collect config fields
     const config = {};
     const inputs = document.querySelectorAll('#target-config-fields input, #target-config-fields textarea');
     inputs.forEach(input => {
-        config[input.name] = input.value;
+        if (input.value) {
+            config[input.name] = input.value;
+        }
     });
 
     try {
-        await api.createTarget({
+        const data = {
             name: document.getElementById('target-name').value,
             type: type,
             config: config,
-        });
+        };
+
+        if (id) {
+            await api.updateTarget(id, data);
+        } else {
+            await api.createTarget(data);
+        }
         closeModal();
         loadTargets();
     } catch (error) {
-        alert('Failed to add target: ' + error.message);
+        alert('Failed to save target: ' + error.message);
     }
 }
 
@@ -423,47 +504,155 @@ async function loadVMs() {
 
 async function showSizeEstimation(vmId) {
     const content = document.getElementById('size-estimation-content');
-    content.innerHTML = '<p>Loading...</p>';
+    content.innerHTML = '<p style="padding: 1.5rem;">Loading...</p>';
     openModal('size-estimation-modal');
 
     try {
+        // Get VM info to check if from vXRAIL
+        const vm = await api.getVM(vmId);
+        const sources = await api.getSources();
+        const source = sources.find(s => s.id === vm.source_env_id);
+        const isVXRail = source?.type === 'vmware-vxrail';
+
         const results = await Promise.all([
-            api.estimateVMSize(vmId, 'vmware', false),
-            api.estimateVMSize(vmId, 'aws', false),
-            api.estimateVMSize(vmId, 'gcp', false),
-            api.estimateVMSize(vmId, 'azure', false),
+            api.estimateVMSize(vmId, 'vmware', isVXRail),
+            api.estimateVMSize(vmId, 'aws', isVXRail),
+            api.estimateVMSize(vmId, 'gcp', isVXRail),
+            api.estimateVMSize(vmId, 'azure', isVXRail),
         ]);
 
         content.innerHTML = `
             <div class="size-estimation-result">
-                <h4>Size Estimations by Target</h4>
+                <h4>${vm.name} - Size Estimations</h4>
+                ${isVXRail ? '<p style="color: var(--warning-color); margin-bottom: 1rem;"><strong>vXRAIL Source:</strong> Sizes adjusted for RAID-1 overhead (typically 50% reduction)</p>' : ''}
                 ${results.map((r, i) => {
-                    const targets = ['VMware', 'AWS', 'GCP', 'Azure'];
+                    const targets = ['VMware (Standard)', 'AWS', 'GCP', 'Azure'];
+                    const savings = r.source_size_gb > 0 ? ((r.source_size_gb - r.estimated_size_gb) / r.source_size_gb * 100).toFixed(1) : 0;
                     return `
-                        <div class="target-estimation">
-                            <h5>${targets[i]}</h5>
+                        <div class="target-estimation" style="margin-bottom: 1rem; padding: 1rem; background: var(--background); border-radius: 0.375rem;">
+                            <h5 style="margin-bottom: 0.5rem;">${targets[i]}</h5>
                             <div class="stat">
-                                <span class="stat-label">Source Size</span>
+                                <span class="stat-label">Source Size (Reported)</span>
                                 <span class="stat-value">${r.source_size_gb.toFixed(2)} GB</span>
                             </div>
                             <div class="stat">
-                                <span class="stat-label">Estimated Size</span>
+                                <span class="stat-label">Estimated Actual Size</span>
                                 <span class="stat-value">${r.estimated_size_gb.toFixed(2)} GB</span>
                             </div>
                             <div class="stat">
-                                <span class="stat-label">Difference</span>
-                                <span class="stat-value">${r.size_difference_gb > 0 ? '+' : ''}${r.size_difference_gb.toFixed(2)} GB</span>
+                                <span class="stat-label">Estimated Savings</span>
+                                <span class="stat-value" style="color: var(--success-color);">${savings}%</span>
                             </div>
-                            <div class="notes">${r.notes}</div>
+                            ${r.notes ? `<div class="notes" style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);">${r.notes}</div>` : ''}
                         </div>
-                        <hr>
                     `;
                 }).join('')}
             </div>
         `;
     } catch (error) {
-        content.innerHTML = `<p class="error">Failed to estimate size: ${error.message}</p>`;
+        content.innerHTML = `<p class="error" style="padding: 1.5rem;">Failed to estimate size: ${error.message}</p>`;
     }
+}
+
+// Batch vXRAIL Estimation
+async function showBatchEstimationModal() {
+    const sources = await api.getSources();
+    const vxrailSources = (sources || []).filter(s => s.type === 'vmware-vxrail');
+
+    const filter = document.getElementById('batch-source-filter');
+    filter.innerHTML = '<option value="">Select vXRAIL Source...</option>' +
+        vxrailSources.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+
+    if (vxrailSources.length === 0) {
+        filter.innerHTML = '<option value="">No vXRAIL sources configured</option>';
+    }
+
+    document.getElementById('batch-vm-list').innerHTML = '<p style="color: var(--text-secondary);">Select a source environment to load VMs</p>';
+    document.getElementById('batch-results').style.display = 'none';
+
+    openModal('batch-estimation-modal');
+}
+
+async function loadBatchVMs() {
+    const sourceId = document.getElementById('batch-source-filter').value;
+    const container = document.getElementById('batch-vm-list');
+
+    if (!sourceId) {
+        container.innerHTML = '<p style="color: var(--text-secondary);">Select a source environment to load VMs</p>';
+        return;
+    }
+
+    try {
+        const vms = await api.getVMs(sourceId);
+        container.innerHTML = (vms || []).map(vm => `
+            <label style="display: block; padding: 0.5rem; border-bottom: 1px solid var(--border-color);">
+                <input type="checkbox" class="batch-vm-checkbox" value="${vm.id}" data-name="${vm.name}" data-size="${vm.disk_size_gb}">
+                ${vm.name} (${vm.disk_size_gb.toFixed(1)} GB)
+            </label>
+        `).join('') || '<p>No VMs found in this source</p>';
+    } catch (error) {
+        container.innerHTML = `<p class="error">Failed to load VMs: ${error.message}</p>`;
+    }
+}
+
+function selectAllBatchVMs() {
+    const checkboxes = document.querySelectorAll('.batch-vm-checkbox');
+    const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+    checkboxes.forEach(cb => cb.checked = !allChecked);
+}
+
+async function runBatchEstimation() {
+    const checkboxes = document.querySelectorAll('.batch-vm-checkbox:checked');
+    if (checkboxes.length === 0) {
+        alert('Please select at least one VM');
+        return;
+    }
+
+    const resultsDiv = document.getElementById('batch-results');
+    const tbody = document.querySelector('#batch-results-table tbody');
+    tbody.innerHTML = '<tr><td colspan="4">Calculating...</td></tr>';
+    resultsDiv.style.display = 'block';
+
+    const results = [];
+    let totalSource = 0;
+    let totalEstimated = 0;
+
+    for (const cb of checkboxes) {
+        try {
+            const estimation = await api.estimateVMSize(cb.value, 'vmware', true);
+            results.push({
+                name: cb.dataset.name,
+                source: estimation.source_size_gb,
+                estimated: estimation.estimated_size_gb,
+            });
+            totalSource += estimation.source_size_gb;
+            totalEstimated += estimation.estimated_size_gb;
+        } catch (error) {
+            results.push({
+                name: cb.dataset.name,
+                source: parseFloat(cb.dataset.size),
+                estimated: parseFloat(cb.dataset.size) * 0.5,
+                error: true,
+            });
+        }
+    }
+
+    tbody.innerHTML = results.map(r => {
+        const savings = r.source > 0 ? ((r.source - r.estimated) / r.source * 100).toFixed(1) : 0;
+        return `
+            <tr${r.error ? ' style="color: var(--warning-color);"' : ''}>
+                <td>${r.name}${r.error ? ' (estimated)' : ''}</td>
+                <td>${r.source.toFixed(2)}</td>
+                <td>${r.estimated.toFixed(2)}</td>
+                <td>${savings}%</td>
+            </tr>
+        `;
+    }).join('');
+
+    const totalSavings = totalSource > 0 ? ((totalSource - totalEstimated) / totalSource * 100).toFixed(1) : 0;
+    document.getElementById('batch-total-source').textContent = totalSource.toFixed(2) + ' GB';
+    document.getElementById('batch-total-estimated').textContent = totalEstimated.toFixed(2) + ' GB';
+    document.getElementById('batch-total-savings').textContent = totalSavings + '%';
 }
 
 async function startMigrationForVM(vmId) {
@@ -482,9 +671,9 @@ async function loadMigrations() {
         const tbody = document.querySelector('#migrations-table tbody');
         tbody.innerHTML = (migrations || []).map(m => `
             <tr>
-                <td>${m.vm_name}</td>
-                <td>${m.source_name}</td>
-                <td>${m.target_name}</td>
+                <td>${m.vm_name || 'N/A'}</td>
+                <td>${m.source_name || 'N/A'}</td>
+                <td>${m.target_name || 'N/A'}</td>
                 <td><span class="status-badge status-${m.status}">${m.status}</span></td>
                 <td>
                     <div class="progress-bar">
@@ -585,18 +774,26 @@ async function loadSchedules() {
         const tbody = document.querySelector('#schedules-table tbody');
         tbody.innerHTML = (tasks || []).map(t => `
             <tr>
-                <td>${t.task_type}</td>
-                <td>${t.job_id}</td>
+                <td><span class="status-badge status-${t.task_type === 'scan' ? 'syncing' : 'ready'}">${t.task_type}</span></td>
+                <td>${t.target_name || t.source_name || (t.job_id ? `Job #${t.job_id}` : '-')}</td>
                 <td>${new Date(t.scheduled_time).toLocaleString()}</td>
                 <td><span class="status-badge status-${t.status}">${t.status}</span></td>
-                <td>${t.created_by}</td>
+                <td>
+                    ${t.status === 'running' ? `
+                        <div class="progress-bar" style="width: 100px; display: inline-block;">
+                            <div class="progress-bar-fill" style="width: ${t.progress || 0}%"></div>
+                        </div>
+                        <small>${t.progress || 0}%</small>
+                    ` : '-'}
+                </td>
+                <td>${t.created_by || '-'}</td>
                 <td class="action-buttons">
                     ${t.status === 'pending' ? `
                         <button class="btn btn-small btn-danger" onclick="cancelScheduledTask(${t.id})">Cancel</button>
                     ` : ''}
                 </td>
             </tr>
-        `).join('') || '<tr><td colspan="6">No scheduled tasks</td></tr>';
+        `).join('') || '<tr><td colspan="7">No scheduled tasks</td></tr>';
     } catch (error) {
         console.error('Failed to load schedules:', error);
     }
@@ -644,7 +841,7 @@ async function loadEnvVariables() {
         tbody.innerHTML = (vars || []).map(v => `
             <tr>
                 <td>${v.name}</td>
-                <td>${v.value}</td>
+                <td>${v.is_secret ? '********' : v.value}</td>
                 <td>${v.description || '-'}</td>
                 <td>${v.is_secret ? 'Yes' : 'No'}</td>
                 <td class="action-buttons">
@@ -727,7 +924,7 @@ async function loadActivityLogs() {
         tbody.innerHTML = (logs || []).map(l => `
             <tr>
                 <td>${new Date(l.created_at).toLocaleString()}</td>
-                <td>${l.username}</td>
+                <td>${l.username || '-'}</td>
                 <td>${l.action}</td>
                 <td>${l.details || '-'}</td>
             </tr>
