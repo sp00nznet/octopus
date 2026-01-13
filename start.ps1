@@ -57,9 +57,18 @@ function Build-Application {
         exit 1
     }
 
-    Write-Host "[INFO] Building Octopus..." -ForegroundColor Cyan
-
     Push-Location $ServerDir
+
+    Write-Host "[INFO] Downloading dependencies..." -ForegroundColor Cyan
+    go mod tidy
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Failed to download dependencies." -ForegroundColor Red
+        Pop-Location
+        exit 1
+    }
+
+    Write-Host "[INFO] Building Octopus..." -ForegroundColor Cyan
     $env:CGO_ENABLED = "1"
     go build -o $Binary .\cmd\main.go
 

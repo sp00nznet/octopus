@@ -55,8 +55,10 @@ build_if_needed() {
 
     if [ "$need_build" = true ]; then
         check_go
-        echo -e "${CYAN}[INFO]${NC} Building Octopus..."
         cd "$SERVER_DIR"
+        echo -e "${CYAN}[INFO]${NC} Downloading dependencies..."
+        go mod tidy
+        echo -e "${CYAN}[INFO]${NC} Building Octopus..."
         CGO_ENABLED=1 go build -o "$BINARY" ./cmd/main.go
         cd "$SCRIPT_DIR"
         echo -e "${GREEN}[SUCCESS]${NC} Build complete."
