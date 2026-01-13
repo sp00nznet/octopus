@@ -556,15 +556,27 @@ async function showSizeEstimation(vmId) {
 
 // Batch vXRAIL Estimation
 async function showBatchEstimationModal() {
-    const sources = await api.getSources();
+    const [sources, targets] = await Promise.all([
+        api.getSources(),
+        api.getTargets(),
+    ]);
+
     const vxrailSources = (sources || []).filter(s => s.type === 'vmware-vxrail');
 
-    const filter = document.getElementById('batch-source-filter');
-    filter.innerHTML = '<option value="">Select vXRAIL Source...</option>' +
+    const sourceFilter = document.getElementById('batch-source-filter');
+    sourceFilter.innerHTML = '<option value="">Select vXRAIL Source...</option>' +
         vxrailSources.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
 
     if (vxrailSources.length === 0) {
-        filter.innerHTML = '<option value="">No vXRAIL sources configured</option>';
+        sourceFilter.innerHTML = '<option value="">No vXRAIL sources configured</option>';
+    }
+
+    const targetFilter = document.getElementById('batch-target-filter');
+    targetFilter.innerHTML = '<option value="">Select Target...</option>' +
+        (targets || []).map(t => `<option value="${t.id}" data-type="${t.type}" data-name="${t.name}">${t.name} (${t.type})</option>`).join('');
+
+    if ((targets || []).length === 0) {
+        targetFilter.innerHTML = '<option value="">No targets configured</option>';
     }
 
     document.getElementById('batch-vm-list').innerHTML = '<p style="color: var(--text-secondary);">Select a source environment to load VMs</p>';
@@ -608,10 +620,21 @@ async function runBatchEstimation() {
         return;
     }
 
+    const targetSelect = document.getElementById('batch-target-filter');
+    const selectedTarget = targetSelect.options[targetSelect.selectedIndex];
+    if (!targetSelect.value) {
+        alert('Please select a target environment');
+        return;
+    }
+
+    const targetType = selectedTarget.dataset.type;
+    const targetName = selectedTarget.dataset.name;
+
     const resultsDiv = document.getElementById('batch-results');
     const tbody = document.querySelector('#batch-results-table tbody');
     tbody.innerHTML = '<tr><td colspan="4">Calculating...</td></tr>';
     resultsDiv.style.display = 'block';
+    document.getElementById('batch-target-name').textContent = `→ ${targetName} (${targetType})`;
 
     const results = [];
     let totalSource = 0;
@@ -619,7 +642,7 @@ async function runBatchEstimation() {
 
     for (const cb of checkboxes) {
         try {
-            const estimation = await api.estimateVMSize(cb.value, 'vmware', true);
+            const estimation = await api.estimateVMSize(cb.value, targetType, true);
             results.push({
                 name: cb.dataset.name,
                 source: estimation.source_size_gb,
