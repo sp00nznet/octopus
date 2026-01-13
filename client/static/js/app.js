@@ -85,11 +85,8 @@ function loadPageData(page) {
         case 'dashboard':
             loadDashboard();
             break;
-        case 'sources':
-            loadSources();
-            break;
-        case 'targets':
-            loadTargets();
+        case 'environments':
+            loadEnvironments();
             break;
         case 'vms':
             loadVMs();
@@ -104,6 +101,26 @@ function loadPageData(page) {
             loadAdminData();
             break;
     }
+}
+
+// Environment Tabs
+function showEnvTab(tab) {
+    document.querySelectorAll('.env-tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('#environments-page .tab-btn').forEach(b => b.classList.remove('active'));
+
+    document.getElementById(`${tab}-tab`).classList.add('active');
+    event.target.classList.add('active');
+
+    if (tab === 'sources') {
+        loadSources();
+    } else {
+        loadTargets();
+    }
+}
+
+function loadEnvironments() {
+    loadSources();
+    loadTargets();
 }
 
 function refreshCurrentPage() {
@@ -188,6 +205,7 @@ async function loadSources() {
                 <td class="action-buttons">
                     <button class="btn btn-small btn-secondary" onclick="editSource(${s.id})">Edit</button>
                     <button class="btn btn-small btn-secondary" onclick="syncSource(${s.id})">Sync</button>
+                    <button class="btn btn-small btn-warning" onclick="convertSourceToTarget(${s.id})" title="Convert to Target">Swap</button>
                     <button class="btn btn-small btn-danger" onclick="deleteSource(${s.id})">Delete</button>
                 </td>
             </tr>
@@ -304,17 +322,23 @@ async function loadTargets() {
     try {
         const targets = await api.getTargets();
         const tbody = document.querySelector('#targets-table tbody');
-        tbody.innerHTML = (targets || []).map(t => `
-            <tr>
-                <td>${t.name}</td>
-                <td>${t.type}</td>
-                <td>${new Date(t.created_at).toLocaleDateString()}</td>
-                <td class="action-buttons">
-                    <button class="btn btn-small btn-secondary" onclick="editTarget(${t.id})">Edit</button>
-                    <button class="btn btn-small btn-danger" onclick="deleteTarget(${t.id})">Delete</button>
-                </td>
-            </tr>
-        `).join('') || '<tr><td colspan="4">No target environments</td></tr>';
+        tbody.innerHTML = (targets || []).map(t => {
+            const config = t.config ? (typeof t.config === 'string' ? JSON.parse(t.config) : t.config) : {};
+            const hostOrRegion = config.host || config.region || config.zone || config.resource_group || '-';
+            return `
+                <tr>
+                    <td>${t.name}</td>
+                    <td>${t.type}</td>
+                    <td>${hostOrRegion}</td>
+                    <td>${new Date(t.created_at).toLocaleDateString()}</td>
+                    <td class="action-buttons">
+                        <button class="btn btn-small btn-secondary" onclick="editTarget(${t.id})">Edit</button>
+                        ${t.type === 'vmware' ? `<button class="btn btn-small btn-warning" onclick="convertTargetToSource(${t.id})" title="Convert to Source">Swap</button>` : ''}
+                        <button class="btn btn-small btn-danger" onclick="deleteTarget(${t.id})">Delete</button>
+                    </td>
+                </tr>
+            `;
+        }).join('') || '<tr><td colspan="5">No target environments</td></tr>';
     } catch (error) {
         console.error('Failed to load targets:', error);
     }
@@ -954,6 +978,125 @@ async function loadActivityLogs() {
         `).join('') || '<tr><td colspan="4">No activity logs</td></tr>';
     } catch (error) {
         console.error('Failed to load logs:', error);
+    }
+}
+
+// Environment Swap Functions
+async function convertSourceToTarget(sourceId) {
+    if (!confirm('Convert this source environment to a target? This will copy the configuration to targets.')) return;
+
+    try {
+        const source = await api.getSource(sourceId);
+        // Create target with same VMware config
+        await api.createTarget({
+            name: source.name + ' (Target)',
+            type: 'vmware',
+            config: {
+                host: source.host,
+                username: source.username,
+                datacenter: source.datacenter,
+            },
+        });
+        alert('Source environment copied to targets. You can now use it as a migration target.');
+        loadEnvironments();
+        // Switch to targets tab
+        showEnvTab('targets');
+    } catch (error) {
+        alert('Failed to convert: ' + error.message);
+    }
+}
+
+async function convertTargetToSource(targetId) {
+    if (!confirm('Convert this target environment to a source? This will copy the configuration to sources.')) return;
+
+    try {
+        const target = await api.getTarget(targetId);
+        const config = target.config ? (typeof target.config === 'string' ? JSON.parse(target.config) : target.config) : {};
+
+        // Create source with VMware config
+        await api.createSource({
+            name: target.name + ' (Source)',
+            type: 'vmware',
+            host: config.host || '',
+            username: config.username || '',
+            password: '', // User will need to set password
+            datacenter: config.datacenter || '',
+        });
+        alert('Target environment copied to sources. Please edit to set the password.');
+        loadEnvironments();
+        // Switch to sources tab
+        showEnvTab('sources');
+    } catch (error) {
+        alert('Failed to convert: ' + error.message);
+    }
+}
+
+// CSV Export Functions
+function downloadCSV(filename, csvContent) {
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+function exportBatchEstimationCSV() {
+    const table = document.getElementById('batch-results-table');
+    const rows = table.querySelectorAll('tbody tr');
+    const targetName = document.getElementById('batch-target-name').textContent;
+
+    if (rows.length === 0) {
+        alert('No results to export');
+        return;
+    }
+
+    let csv = 'VM Name,vXRAIL Size (GB),Estimated on Target (GB),Savings (%)\n';
+
+    rows.forEach(row => {
+        const cells = row.querySelectorAll('td');
+        if (cells.length >= 4) {
+            const name = cells[0].textContent.replace(/,/g, '');
+            const sourceSize = cells[1].textContent;
+            const estSize = cells[2].textContent;
+            const savings = cells[3].textContent;
+            csv += `"${name}",${sourceSize},${estSize},${savings}\n`;
+        }
+    });
+
+    // Add totals
+    const totalSource = document.getElementById('batch-total-source').textContent;
+    const totalEst = document.getElementById('batch-total-estimated').textContent;
+    const totalSavings = document.getElementById('batch-total-savings').textContent;
+    csv += `"TOTAL",${totalSource.replace(' GB', '')},${totalEst.replace(' GB', '')},${totalSavings}\n`;
+
+    const date = new Date().toISOString().split('T')[0];
+    downloadCSV(`vxrail-estimation-${date}.csv`, csv);
+}
+
+async function exportSchedulesCSV() {
+    try {
+        const tasks = await api.getScheduledTasks();
+
+        if (!tasks || tasks.length === 0) {
+            alert('No scheduled tasks to export');
+            return;
+        }
+
+        let csv = 'ID,Type,Target,Scheduled Time,Status,Progress,Created By\n';
+
+        tasks.forEach(t => {
+            const target = t.target_name || t.source_name || (t.job_id ? `Job #${t.job_id}` : '-');
+            const scheduledTime = new Date(t.scheduled_time).toISOString();
+            csv += `${t.id},"${t.task_type}","${target}","${scheduledTime}","${t.status}",${t.progress || 0},"${t.created_by || '-'}"\n`;
+        });
+
+        const date = new Date().toISOString().split('T')[0];
+        downloadCSV(`scheduled-tasks-${date}.csv`, csv);
+    } catch (error) {
+        alert('Failed to export: ' + error.message);
     }
 }
 

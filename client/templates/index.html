@@ -16,8 +16,7 @@
             </div>
             <ul class="nav-menu">
                 <li><a href="#dashboard" class="nav-link active" data-page="dashboard">Dashboard</a></li>
-                <li><a href="#sources" class="nav-link" data-page="sources">Source Environments</a></li>
-                <li><a href="#targets" class="nav-link" data-page="targets">Target Environments</a></li>
+                <li><a href="#environments" class="nav-link" data-page="environments">Environments</a></li>
                 <li><a href="#vms" class="nav-link" data-page="vms">Virtual Machines</a></li>
                 <li><a href="#migrations" class="nav-link" data-page="migrations">Migrations</a></li>
                 <li><a href="#schedules" class="nav-link" data-page="schedules">Scheduled Tasks</a></li>
@@ -89,44 +88,52 @@
                 </div>
             </div>
 
-            <!-- Sources Page -->
-            <div id="sources-page" class="page">
+            <!-- Environments Page (Combined Sources + Targets) -->
+            <div id="environments-page" class="page">
                 <header class="page-header">
-                    <h2>Source Environments</h2>
-                    <button class="btn btn-primary" onclick="showAddSourceModal()">Add Source</button>
+                    <h2>Environments</h2>
+                    <div class="header-actions">
+                        <button class="btn btn-primary" onclick="showAddSourceModal()">Add Source</button>
+                        <button class="btn btn-primary" onclick="showAddTargetModal()">Add Target</button>
+                    </div>
                 </header>
-                <table class="data-table" id="sources-table">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Type</th>
-                            <th>Host</th>
-                            <th>Datacenter</th>
-                            <th>vXRAIL</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-            </div>
+                <div class="admin-tabs" style="margin-bottom: 1.5rem;">
+                    <button class="tab-btn active" onclick="showEnvTab('sources')">Sources</button>
+                    <button class="tab-btn" onclick="showEnvTab('targets')">Targets</button>
+                </div>
 
-            <!-- Targets Page -->
-            <div id="targets-page" class="page">
-                <header class="page-header">
-                    <h2>Target Environments</h2>
-                    <button class="btn btn-primary" onclick="showAddTargetModal()">Add Target</button>
-                </header>
-                <table class="data-table" id="targets-table">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Type</th>
-                            <th>Created</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
+                <!-- Sources Tab -->
+                <div id="sources-tab" class="env-tab-content active">
+                    <table class="data-table" id="sources-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Host</th>
+                                <th>Datacenter</th>
+                                <th>vXRAIL</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <!-- Targets Tab -->
+                <div id="targets-tab" class="env-tab-content" style="display: none;">
+                    <table class="data-table" id="targets-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Host/Region</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
             </div>
 
             <!-- VMs Page -->
@@ -194,7 +201,10 @@
             <div id="schedules-page" class="page">
                 <header class="page-header">
                     <h2>Scheduled Tasks</h2>
-                    <button class="btn btn-primary" onclick="showScheduleTaskModal()">Schedule Task</button>
+                    <div class="header-actions">
+                        <button class="btn btn-secondary" onclick="exportSchedulesCSV()">Export CSV</button>
+                        <button class="btn btn-primary" onclick="showScheduleTaskModal()">Schedule Task</button>
+                    </div>
                 </header>
                 <table class="data-table" id="schedules-table">
                     <thead>
@@ -453,7 +463,10 @@
                 </div>
             </div>
             <div id="batch-results" style="margin-top: 1.5rem; display: none;">
-                <h4>Results <span id="batch-target-name" style="color: var(--text-secondary); font-weight: normal;"></span></h4>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                    <h4>Results <span id="batch-target-name" style="color: var(--text-secondary); font-weight: normal;"></span></h4>
+                    <button class="btn btn-small btn-secondary" onclick="exportBatchEstimationCSV()">Export CSV</button>
+                </div>
                 <table class="data-table" id="batch-results-table">
                     <thead>
                         <tr>
