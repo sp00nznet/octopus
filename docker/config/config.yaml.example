@@ -1,0 +1,36 @@
+# Octopus Configuration File
+# Copy this file to config.yaml and adjust values as needed
+
+# Database configuration
+database_path: /data/octopus.db
+
+# Active Directory Authentication
+# Leave empty to use local authentication (admin/admin for development)
+ad_server: ""
+ad_base_dn: "DC=example,DC=com"
+ad_bind_user: "CN=svc_octopus,OU=Service Accounts,DC=example,DC=com"
+ad_bind_pass: ""
+ad_domain: "EXAMPLE"
+
+# JWT Configuration
+jwt_secret: "change-me-to-a-secure-random-string"
+jwt_expiration_hours: 24
+
+# Session Configuration
+session_key: "change-me-to-another-secure-random-string"
+
+# VMware Default Settings
+vmware_defaults:
+  insecure: true  # Skip SSL verification (for development)
+
+# AWS Default Settings
+aws_defaults:
+  region: "us-east-1"
+
+# GCP Default Settings
+gcp_defaults:
+  zone: "us-central1-a"
+
+# Azure Default Settings
+azure_defaults:
+  location: "eastus"

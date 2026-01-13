@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Octopus - VM Migration Tool</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h1>🐙 Octopus</h1>
+                <span class="subtitle">VM Migration Tool</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="#dashboard" class="nav-link active" data-page="dashboard">Dashboard</a></li>
+                <li><a href="#sources" class="nav-link" data-page="sources">Source Environments</a></li>
+                <li><a href="#targets" class="nav-link" data-page="targets">Target Environments</a></li>
+                <li><a href="#vms" class="nav-link" data-page="vms">Virtual Machines</a></li>
+                <li><a href="#migrations" class="nav-link" data-page="migrations">Migrations</a></li>
+                <li><a href="#schedules" class="nav-link" data-page="schedules">Scheduled Tasks</a></li>
+                <li class="admin-only"><a href="#admin" class="nav-link" data-page="admin">Admin Portal</a></li>
+            </ul>
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <span id="current-user">Not logged in</span>
+                </div>
+                <button id="logout-btn" class="btn btn-secondary">Logout</button>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Dashboard Page -->
+            <div id="dashboard-page" class="page active">
+                <header class="page-header">
+                    <h2>Dashboard</h2>
+                </header>
+                <div class="dashboard-stats">
+                    <div class="stat-card">
+                        <h3>Source Environments</h3>
+                        <span class="stat-number" id="stat-sources">0</span>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Target Environments</h3>
+                        <span class="stat-number" id="stat-targets">0</span>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Total VMs</h3>
+                        <span class="stat-number" id="stat-vms">0</span>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Active Migrations</h3>
+                        <span class="stat-number" id="stat-migrations">0</span>
+                    </div>
+                </div>
+                <div class="dashboard-sections">
+                    <section class="recent-activity">
+                        <h3>Recent Migrations</h3>
+                        <table class="data-table" id="recent-migrations-table">
+                            <thead>
+                                <tr>
+                                    <th>VM Name</th>
+                                    <th>Source</th>
+                                    <th>Target</th>
+                                    <th>Status</th>
+                                    <th>Progress</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </section>
+                    <section class="upcoming-tasks">
+                        <h3>Upcoming Scheduled Tasks</h3>
+                        <table class="data-table" id="upcoming-tasks-table">
+                            <thead>
+                                <tr>
+                                    <th>Type</th>
+                                    <th>Job ID</th>
+                                    <th>Scheduled Time</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Sources Page -->
+            <div id="sources-page" class="page">
+                <header class="page-header">
+                    <h2>Source Environments</h2>
+                    <button class="btn btn-primary" onclick="showAddSourceModal()">Add Source</button>
+                </header>
+                <table class="data-table" id="sources-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Host</th>
+                            <th>Datacenter</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- Targets Page -->
+            <div id="targets-page" class="page">
+                <header class="page-header">
+                    <h2>Target Environments</h2>
+                    <button class="btn btn-primary" onclick="showAddTargetModal()">Add Target</button>
+                </header>
+                <table class="data-table" id="targets-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- VMs Page -->
+            <div id="vms-page" class="page">
+                <header class="page-header">
+                    <h2>Virtual Machines</h2>
+                    <div class="header-actions">
+                        <select id="vm-source-filter">
+                            <option value="">All Sources</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="syncAllSources()">Sync All</button>
+                    </div>
+                </header>
+                <table class="data-table" id="vms-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>CPUs</th>
+                            <th>Memory (GB)</th>
+                            <th>Disk (GB)</th>
+                            <th>Power State</th>
+                            <th>Last Synced</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- Migrations Page -->
+            <div id="migrations-page" class="page">
+                <header class="page-header">
+                    <h2>Migrations</h2>
+                    <button class="btn btn-primary" onclick="showCreateMigrationModal()">New Migration</button>
+                </header>
+                <div class="filter-bar">
+                    <select id="migration-status-filter" onchange="loadMigrations()">
+                        <option value="">All Statuses</option>
+                        <option value="pending">Pending</option>
+                        <option value="syncing">Syncing</option>
+                        <option value="ready">Ready</option>
+                        <option value="cutting_over">Cutting Over</option>
+                        <option value="completed">Completed</option>
+                        <option value="failed">Failed</option>
+                    </select>
+                </div>
+                <table class="data-table" id="migrations-table">
+                    <thead>
+                        <tr>
+                            <th>VM Name</th>
+                            <th>Source</th>
+                            <th>Target</th>
+                            <th>Status</th>
+                            <th>Progress</th>
+                            <th>Scheduled Cutover</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- Schedules Page -->
+            <div id="schedules-page" class="page">
+                <header class="page-header">
+                    <h2>Scheduled Tasks</h2>
+                    <button class="btn btn-primary" onclick="showScheduleTaskModal()">Schedule Task</button>
+                </header>
+                <table class="data-table" id="schedules-table">
+                    <thead>
+                        <tr>
+                            <th>Type</th>
+                            <th>Job ID</th>
+                            <th>Scheduled Time</th>
+                            <th>Status</th>
+                            <th>Created By</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <!-- Admin Page -->
+            <div id="admin-page" class="page admin-only">
+                <header class="page-header">
+                    <h2>Admin Portal</h2>
+                </header>
+                <div class="admin-tabs">
+                    <button class="tab-btn active" onclick="showAdminTab('env-vars')">Environment Variables</button>
+                    <button class="tab-btn" onclick="showAdminTab('users')">Users</button>
+                    <button class="tab-btn" onclick="showAdminTab('logs')">Activity Logs</button>
+                </div>
+
+                <!-- Environment Variables Tab -->
+                <div id="env-vars-tab" class="admin-tab-content active">
+                    <div class="section-header">
+                        <h3>Environment Variables</h3>
+                        <button class="btn btn-primary" onclick="showAddEnvVarModal()">Add Variable</button>
+                    </div>
+                    <table class="data-table" id="env-vars-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Value</th>
+                                <th>Description</th>
+                                <th>Secret</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <!-- Users Tab -->
+                <div id="users-tab" class="admin-tab-content">
+                    <h3>Users</h3>
+                    <table class="data-table" id="users-table">
+                        <thead>
+                            <tr>
+                                <th>Username</th>
+                                <th>Display Name</th>
+                                <th>Email</th>
+                                <th>Admin</th>
+                                <th>Last Login</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <!-- Activity Logs Tab -->
+                <div id="logs-tab" class="admin-tab-content">
+                    <h3>Activity Logs</h3>
+                    <table class="data-table" id="logs-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>User</th>
+                                <th>Action</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <div id="modal-overlay" class="modal-overlay" onclick="closeModal()"></div>
+
+    <!-- Add Source Modal -->
+    <div id="add-source-modal" class="modal">
+        <div class="modal-header">
+            <h3>Add Source Environment</h3>
+            <button class="close-btn" onclick="closeModal()">&times;</button>
+        </div>
+        <form id="add-source-form" onsubmit="addSource(event)">
+            <div class="form-group">
+                <label for="source-name">Name</label>
+                <input type="text" id="source-name" required>
+            </div>
+            <div class="form-group">
+                <label for="source-type">Type</label>
+                <select id="source-type" required>
+                    <option value="vmware">VMware vCenter</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="source-host">Host</label>
+                <input type="text" id="source-host" placeholder="vcenter.example.com" required>
+            </div>
+            <div class="form-group">
+                <label for="source-username">Username</label>
+                <input type="text" id="source-username" required>
+            </div>
+            <div class="form-group">
+                <label for="source-password">Password</label>
+                <input type="password" id="source-password" required>
+            </div>
+            <div class="form-group">
+                <label for="source-datacenter">Datacenter</label>
+                <input type="text" id="source-datacenter" required>
+            </div>
+            <div class="form-group">
+                <label for="source-cluster">Cluster (optional)</label>
+                <input type="text" id="source-cluster">
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Add Source</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Add Target Modal -->
+    <div id="add-target-modal" class="modal">
+        <div class="modal-header">
+            <h3>Add Target Environment</h3>
+            <button class="close-btn" onclick="closeModal()">&times;</button>
+        </div>
+        <form id="add-target-form" onsubmit="addTarget(event)">
+            <div class="form-group">
+                <label for="target-name">Name</label>
+                <input type="text" id="target-name" required>
+            </div>
+            <div class="form-group">
+                <label for="target-type">Type</label>
+                <select id="target-type" required onchange="updateTargetConfigFields()">
+                    <option value="vmware">VMware vCenter</option>
+                    <option value="aws">AWS</option>
+                    <option value="gcp">Google Cloud Platform</option>
+                    <option value="azure">Microsoft Azure</option>
+                </select>
+            </div>
+            <div id="target-config-fields">
+                <!-- Dynamic fields based on target type -->
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Add Target</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Create Migration Modal -->
+    <div id="create-migration-modal" class="modal">
+        <div class="modal-header">
+            <h3>Create Migration</h3>
+            <button class="close-btn" onclick="closeModal()">&times;</button>
+        </div>
+        <form id="create-migration-form" onsubmit="createMigration(event)">
+            <div class="form-group">
+                <label for="migration-vm">Virtual Machine</label>
+                <select id="migration-vm" required></select>
+            </div>
+            <div class="form-group">
+                <label for="migration-source">Source Environment</label>
+                <select id="migration-source" required></select>
+            </div>
+            <div class="form-group">
+                <label for="migration-target">Target Environment</label>
+                <select id="migration-target" required></select>
+            </div>
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="migration-preserve-mac" checked>
+                    Preserve MAC Addresses
+                </label>
+            </div>
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="migration-preserve-portgroups" checked>
+                    Preserve Port Groups
+                </label>
+            </div>
+            <div class="form-group">
+                <label for="migration-sync-interval">Sync Interval (minutes)</label>
+                <input type="number" id="migration-sync-interval" value="60" min="5">
+            </div>
+            <div class="form-group">
+                <label for="migration-cutover">Scheduled Cutover (optional)</label>
+                <input type="datetime-local" id="migration-cutover">
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Create Migration</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Size Estimation Modal -->
+    <div id="size-estimation-modal" class="modal">
+        <div class="modal-header">
+            <h3>Size Estimation</h3>
+            <button class="close-btn" onclick="closeModal()">&times;</button>
+        </div>
+        <div id="size-estimation-content">
+            <!-- Populated dynamically -->
+        </div>
+    </div>
+
+    <!-- Environment Variable Modal -->
+    <div id="env-var-modal" class="modal">
+        <div class="modal-header">
+            <h3>Add Environment Variable</h3>
+            <button class="close-btn" onclick="closeModal()">&times;</button>
+        </div>
+        <form id="env-var-form" onsubmit="saveEnvVar(event)">
+            <div class="form-group">
+                <label for="env-var-name">Name</label>
+                <input type="text" id="env-var-name" required pattern="[A-Z_][A-Z0-9_]*">
+            </div>
+            <div class="form-group">
+                <label for="env-var-value">Value</label>
+                <input type="text" id="env-var-value" required>
+            </div>
+            <div class="form-group">
+                <label for="env-var-description">Description</label>
+                <textarea id="env-var-description"></textarea>
+            </div>
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="env-var-secret">
+                    Secret Value
+                </label>
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save</button>
+            </div>
+        </form>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
