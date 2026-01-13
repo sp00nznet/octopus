@@ -497,11 +497,25 @@ body {
 
 /* Admin Only Elements */
 .admin-only {
-    display: none;
+    display: none !important;
 }
 
 body.is-admin .admin-only {
-    display: block;
+    display: block !important;
+}
+
+/* But pages must still respect active state */
+body.is-admin .page.admin-only {
+    display: none !important;
+}
+
+body.is-admin .page.admin-only.active {
+    display: block !important;
+}
+
+/* Nav items with admin-only should be inline */
+body.is-admin li.admin-only {
+    display: list-item !important;
 }
 
 /* Responsive */
