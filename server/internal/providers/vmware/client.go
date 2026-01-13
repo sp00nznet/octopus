@@ -9,6 +9,7 @@ import (
 	"github.com/vmware/govmomi"
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/ovf"
 	"github.com/vmware/govmomi/property"
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
@@ -181,7 +182,7 @@ func (c *Client) ExportVM(vmName string, exportPath string) error {
 	}
 
 	// Get OVF manager
-	m := object.NewOvfManager(c.client.Client)
+	m := ovf.NewManager(c.client.Client)
 
 	// Create export spec
 	var mvm mo.VirtualMachine
@@ -330,29 +331,53 @@ func (c *Client) GetChangedBlocks(vmName, snapshotID string, diskKey int32, star
 	// Get the VM's disk change info using CBT
 	var mvm mo.VirtualMachine
 	pc := property.DefaultCollector(c.client.Client)
-	err = pc.RetrieveOne(c.ctx, vm.Reference(), []string{"config"}, &mvm)
+	err = pc.RetrieveOne(c.ctx, vm.Reference(), []string{"config", "snapshot"}, &mvm)
 	if err != nil {
 		return nil, err
 	}
 
-	// Find disk capacity
-	var diskCapacity int64
+	// Find the target disk
+	var targetDisk *types.VirtualDisk
 	for _, dev := range mvm.Config.Hardware.Device {
 		if disk, ok := dev.(*types.VirtualDisk); ok {
 			if disk.Key == diskKey {
-				diskCapacity = disk.CapacityInKB * 1024
+				targetDisk = disk
 				break
 			}
 		}
 	}
 
+	if targetDisk == nil {
+		return nil, fmt.Errorf("disk with key %d not found", diskKey)
+	}
+
+	// Find snapshot reference if provided
+	var snapshotRef *types.ManagedObjectReference
+	if snapshotID != "" && mvm.Snapshot != nil {
+		// Search for snapshot by ID in the snapshot tree
+		snapshotRef = findSnapshotRef(mvm.Snapshot.RootSnapshotList, snapshotID)
+	}
+
 	// Query changed blocks
-	changeInfo, err := vm.QueryChangedDiskAreas(c.ctx, nil, nil, &types.VirtualMachineSnapshotInfo{}, diskKey, startOffset, snapshotID)
+	changeInfo, err := vm.QueryChangedDiskAreas(c.ctx, snapshotRef, snapshotRef, targetDisk, startOffset)
 	if err != nil {
 		return nil, err
 	}
 
-	_ = diskCapacity // Would be used for full block tracking
+	return []types.DiskChangeInfo{changeInfo}, nil
+}
 
-	return []types.DiskChangeInfo{*changeInfo}, nil
+// findSnapshotRef searches for a snapshot by ID in the snapshot tree
+func findSnapshotRef(snapshots []types.VirtualMachineSnapshotTree, snapshotID string) *types.ManagedObjectReference {
+	for _, snap := range snapshots {
+		if snap.Snapshot.Value == snapshotID {
+			return &snap.Snapshot
+		}
+		if len(snap.ChildSnapshotList) > 0 {
+			if ref := findSnapshotRef(snap.ChildSnapshotList, snapshotID); ref != nil {
+				return ref
+			}
+		}
+	}
+	return nil
 }
