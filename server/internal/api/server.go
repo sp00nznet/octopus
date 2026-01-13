@@ -34,7 +34,7 @@ func (s *Server) Router() *mux.Router {
 	r := mux.NewRouter()
 
 	// Serve static files for the web client
-	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("../client/static"))))
+	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("client/static"))))
 
 	// API routes
 	api := r.PathPrefix("/api/v1").Subrouter()
@@ -127,9 +127,9 @@ func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
 
 // Serve web client
 func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "../client/templates/index.html")
+	http.ServeFile(w, r, "client/templates/index.html")
 }
 
 func (s *Server) serveLogin(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "../client/templates/login.html")
+	http.ServeFile(w, r, "client/templates/login.html")
 }
