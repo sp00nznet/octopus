@@ -126,6 +126,7 @@ func (s *Server) updateSourceEnvironment(w http.ResponseWriter, r *http.Request)
 	id := mux.Vars(r)["id"]
 	var env struct {
 		Name       string `json:"name"`
+		Type       string `json:"type"`
 		Host       string `json:"host"`
 		Username   string `json:"username"`
 		Password   string `json:"password"`
@@ -138,14 +139,27 @@ func (s *Server) updateSourceEnvironment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	_, err := s.db.Exec(`
-		UPDATE source_environments
-		SET name=?, host=?, username=?, password=?, datacenter=?, cluster=?, updated_at=?
-		WHERE id=?
-	`, env.Name, env.Host, env.Username, env.Password, env.Datacenter, env.Cluster, time.Now(), id)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to update environment")
-		return
+	// If password is empty, don't update it
+	if env.Password != "" {
+		_, err := s.db.Exec(`
+			UPDATE source_environments
+			SET name=?, type=?, host=?, username=?, password=?, datacenter=?, cluster=?, updated_at=?
+			WHERE id=?
+		`, env.Name, env.Type, env.Host, env.Username, env.Password, env.Datacenter, env.Cluster, time.Now(), id)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to update environment")
+			return
+		}
+	} else {
+		_, err := s.db.Exec(`
+			UPDATE source_environments
+			SET name=?, type=?, host=?, username=?, datacenter=?, cluster=?, updated_at=?
+			WHERE id=?
+		`, env.Name, env.Type, env.Host, env.Username, env.Datacenter, env.Cluster, time.Now(), id)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to update environment")
+			return
+		}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]string{"status": "updated"})
@@ -153,7 +167,22 @@ func (s *Server) updateSourceEnvironment(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) deleteSourceEnvironment(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
-	_, err := s.db.Exec("DELETE FROM source_environments WHERE id = ?", id)
+
+	// Delete migrations associated with VMs from this source
+	s.db.Exec("DELETE FROM migration_jobs WHERE source_env_id = ?", id)
+
+	// Delete scheduled tasks for those migrations
+	s.db.Exec("DELETE FROM scheduled_tasks WHERE source_env_id = ?", id)
+
+	// Delete VMs from this source
+	_, err := s.db.Exec("DELETE FROM vms WHERE source_env_id = ?", id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to delete associated VMs")
+		return
+	}
+
+	// Delete the source environment
+	_, err = s.db.Exec("DELETE FROM source_environments WHERE id = ?", id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to delete environment")
 		return
@@ -310,6 +339,11 @@ func (s *Server) updateTargetEnvironment(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) deleteTargetEnvironment(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
+
+	// Delete migrations targeting this environment
+	s.db.Exec("DELETE FROM migration_jobs WHERE target_env_id = ?", id)
+
+	// Delete the target environment
 	_, err := s.db.Exec("DELETE FROM target_environments WHERE id = ?", id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to delete target environment")
