@@ -129,6 +129,41 @@ class OctopusAPI {
         });
     }
 
+    // Unified Environments (can be source or target)
+    async getEnvironments() {
+        return this.request('/environments');
+    }
+
+    async getEnvironment(id) {
+        return this.request(`/environments/${id}`);
+    }
+
+    async createEnvironment(data) {
+        return this.request('/environments', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async updateEnvironment(id, data) {
+        return this.request(`/environments/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async deleteEnvironment(id) {
+        return this.request(`/environments/${id}`, {
+            method: 'DELETE',
+        });
+    }
+
+    async syncEnvironment(id) {
+        return this.request(`/environments/${id}/sync`, {
+            method: 'POST',
+        });
+    }
+
     // Virtual Machines
     async getVMs(sourceId = null) {
         const query = sourceId ? `?source_id=${sourceId}` : '';

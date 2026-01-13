@@ -740,3 +740,176 @@ func (s *Server) cancelScheduledTask(w http.ResponseWriter, r *http.Request) {
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
+
+// Unified Environment handlers
+func (s *Server) listEnvironments(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(`
+		SELECT id, name, type, config_json, created_at, updated_at
+		FROM environments
+		ORDER BY name
+	`)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Database error")
+		return
+	}
+	defer rows.Close()
+
+	var envs []db.Environment
+	for rows.Next() {
+		var env db.Environment
+		err := rows.Scan(&env.ID, &env.Name, &env.Type, &env.ConfigJSON, &env.CreatedAt, &env.UpdatedAt)
+		if err != nil {
+			continue
+		}
+		envs = append(envs, env)
+	}
+
+	respondJSON(w, http.StatusOK, envs)
+}
+
+func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request) {
+	var env struct {
+		Name       string          `json:"name"`
+		Type       string          `json:"type"`
+		ConfigJSON json.RawMessage `json:"config"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&env); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	result, err := s.db.Exec(`
+		INSERT INTO environments (name, type, config_json)
+		VALUES (?, ?, ?)
+	`, env.Name, env.Type, string(env.ConfigJSON))
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to create environment: "+err.Error())
+		return
+	}
+
+	id, _ := result.LastInsertId()
+	respondJSON(w, http.StatusCreated, map[string]int64{"id": id})
+}
+
+func (s *Server) getEnvironment(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	var env db.Environment
+	err := s.db.QueryRow(`
+		SELECT id, name, type, config_json, created_at, updated_at
+		FROM environments WHERE id = ?
+	`, id).Scan(&env.ID, &env.Name, &env.Type, &env.ConfigJSON, &env.CreatedAt, &env.UpdatedAt)
+	if err == sql.ErrNoRows {
+		respondError(w, http.StatusNotFound, "Environment not found")
+		return
+	}
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Database error")
+		return
+	}
+	respondJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) updateEnvironment(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	var env struct {
+		Name       string          `json:"name"`
+		Type       string          `json:"type"`
+		ConfigJSON json.RawMessage `json:"config"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&env); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	_, err := s.db.Exec(`
+		UPDATE environments SET name=?, type=?, config_json=?, updated_at=?
+		WHERE id=?
+	`, env.Name, env.Type, string(env.ConfigJSON), time.Now(), id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to update environment")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	_, err := s.db.Exec("DELETE FROM environments WHERE id = ?", id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to delete environment")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) syncEnvironment(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+
+	// Get environment details
+	var env db.Environment
+	err := s.db.QueryRow(`
+		SELECT id, name, type, config_json FROM environments WHERE id = ?
+	`, id).Scan(&env.ID, &env.Name, &env.Type, &env.ConfigJSON)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "Environment not found")
+		return
+	}
+
+	// Only VMware environments can be synced
+	if env.Type != "vmware" && env.Type != "vmware-vxrail" {
+		respondError(w, http.StatusBadRequest, "Only VMware environments can be synced")
+		return
+	}
+
+	// Parse config
+	var config struct {
+		Host       string `json:"host"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`
+		Datacenter string `json:"datacenter"`
+	}
+	if err := json.Unmarshal([]byte(env.ConfigJSON), &config); err != nil {
+		respondError(w, http.StatusInternalServerError, "Invalid environment config")
+		return
+	}
+
+	// Connect to vCenter and fetch VMs
+	client, err := vmware.NewClient(config.Host, config.Username, config.Password, config.Datacenter, true)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to connect to vCenter: "+err.Error())
+		return
+	}
+	defer client.Logout()
+
+	vms, err := client.ListVMs()
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to list VMs: "+err.Error())
+		return
+	}
+
+	// Update VMs in database - use environment ID as source_env_id
+	for _, vm := range vms {
+		_, err = s.db.Exec(`
+			INSERT INTO vms (source_env_id, name, uuid, cpu_count, memory_mb, disk_size_gb, guest_os,
+				power_state, ip_addresses, mac_addresses, port_groups, hardware_version, vmware_tools_status, last_synced)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(uuid) DO UPDATE SET
+				name=?, cpu_count=?, memory_mb=?, disk_size_gb=?, guest_os=?,
+				power_state=?, ip_addresses=?, mac_addresses=?, port_groups=?,
+				hardware_version=?, vmware_tools_status=?, last_synced=?
+		`, env.ID, vm.Name, vm.UUID, vm.CPUCount, vm.MemoryMB, vm.DiskSizeGB, vm.GuestOS,
+			vm.PowerState, vm.IPAddresses, vm.MACAddresses, vm.PortGroups, vm.HardwareVersion,
+			vm.VMwareToolsStatus, time.Now(),
+			vm.Name, vm.CPUCount, vm.MemoryMB, vm.DiskSizeGB, vm.GuestOS,
+			vm.PowerState, vm.IPAddresses, vm.MACAddresses, vm.PortGroups,
+			vm.HardwareVersion, vm.VMwareToolsStatus, time.Now())
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":   "synced",
+		"vm_count": len(vms),
+	})
+}

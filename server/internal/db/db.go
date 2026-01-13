@@ -180,11 +180,22 @@ func RunMigrations(db *Database) error {
 			executed_at TIMESTAMP
 		)`,
 
+		// Unified environments table (can be source or target)
+		`CREATE TABLE IF NOT EXISTS environments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL CHECK(type IN ('vmware', 'vmware-vxrail', 'aws', 'gcp', 'azure')),
+			config_json TEXT NOT NULL DEFAULT '{}',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+
 		// Create indexes for performance
 		`CREATE INDEX IF NOT EXISTS idx_vms_source_env ON vms(source_env_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_migration_jobs_status ON migration_jobs(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_time ON scheduled_tasks(scheduled_time)`,
+		`CREATE INDEX IF NOT EXISTS idx_environments_type ON environments(type)`,
 	}
 
 	for _, migration := range migrations {
@@ -308,4 +319,14 @@ type ActivityLog struct {
 	Details    string    `json:"details"`
 	IPAddress  string    `json:"ip_address"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+// Environment represents a unified source/target environment
+type Environment struct {
+	ID         int64     `json:"id"`
+	Name       string    `json:"name"`
+	Type       string    `json:"type"`
+	ConfigJSON string    `json:"config"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }

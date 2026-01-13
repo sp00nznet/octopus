@@ -88,52 +88,29 @@
                 </div>
             </div>
 
-            <!-- Environments Page (Combined Sources + Targets) -->
+            <!-- Environments Page (Unified - can be source or target) -->
             <div id="environments-page" class="page">
                 <header class="page-header">
                     <h2>Environments</h2>
                     <div class="header-actions">
-                        <button class="btn btn-primary" onclick="showAddSourceModal()">Add Source</button>
-                        <button class="btn btn-primary" onclick="showAddTargetModal()">Add Target</button>
+                        <button class="btn btn-primary" onclick="showAddEnvironmentModal()">Add Environment</button>
                     </div>
                 </header>
-                <div class="admin-tabs" style="margin-bottom: 1.5rem;">
-                    <button class="tab-btn active" onclick="showEnvTab('sources')">Sources</button>
-                    <button class="tab-btn" onclick="showEnvTab('targets')">Targets</button>
-                </div>
-
-                <!-- Sources Tab -->
-                <div id="sources-tab" class="env-tab-content active">
-                    <table class="data-table" id="sources-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Type</th>
-                                <th>Host</th>
-                                <th>Datacenter</th>
-                                <th>vXRAIL</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
-                </div>
-
-                <!-- Targets Tab -->
-                <div id="targets-tab" class="env-tab-content" style="display: none;">
-                    <table class="data-table" id="targets-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Type</th>
-                                <th>Host/Region</th>
-                                <th>Created</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
-                </div>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Environments can be used as either source or destination for migrations.
+                </p>
+                <table class="data-table" id="environments-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Host/Region</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
             </div>
 
             <!-- VMs Page -->
@@ -145,7 +122,7 @@
                             <option value="">All Sources</option>
                         </select>
                         <button class="btn btn-secondary" onclick="showBatchEstimationModal()">Batch vXRAIL Estimation</button>
-                        <button class="btn btn-secondary" onclick="syncAllSources()">Sync All</button>
+                        <button class="btn btn-secondary" onclick="syncAllEnvironments()">Sync All</button>
                     </div>
                 </header>
                 <table class="data-table" id="vms-table">
@@ -293,79 +270,34 @@
     <!-- Modals -->
     <div id="modal-overlay" class="modal-overlay" onclick="closeModal()"></div>
 
-    <!-- Add/Edit Source Modal -->
-    <div id="source-modal" class="modal">
+    <!-- Add/Edit Environment Modal -->
+    <div id="environment-modal" class="modal">
         <div class="modal-header">
-            <h3 id="source-modal-title">Add Source Environment</h3>
+            <h3 id="environment-modal-title">Add Environment</h3>
             <button class="close-btn" onclick="closeModal()">&times;</button>
         </div>
-        <form id="source-form" onsubmit="saveSource(event)">
-            <input type="hidden" id="source-id">
+        <form id="environment-form" onsubmit="saveEnvironment(event)">
+            <input type="hidden" id="environment-id">
             <div class="form-group">
-                <label for="source-name">Name</label>
-                <input type="text" id="source-name" required>
+                <label for="environment-name">Name</label>
+                <input type="text" id="environment-name" required>
             </div>
             <div class="form-group">
-                <label for="source-type">Type</label>
-                <select id="source-type" required>
+                <label for="environment-type">Type</label>
+                <select id="environment-type" required onchange="updateEnvironmentConfigFields()">
                     <option value="vmware">VMware vCenter</option>
                     <option value="vmware-vxrail">VMware vXRAIL</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="source-host">Host</label>
-                <input type="text" id="source-host" placeholder="vcenter.example.com" required>
-            </div>
-            <div class="form-group">
-                <label for="source-username">Username</label>
-                <input type="text" id="source-username" required>
-            </div>
-            <div class="form-group">
-                <label for="source-password">Password</label>
-                <input type="password" id="source-password" placeholder="Leave blank to keep existing">
-            </div>
-            <div class="form-group">
-                <label for="source-datacenter">Datacenter</label>
-                <input type="text" id="source-datacenter" required>
-            </div>
-            <div class="form-group">
-                <label for="source-cluster">Cluster (optional)</label>
-                <input type="text" id="source-cluster">
-            </div>
-            <div class="form-actions">
-                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button type="submit" class="btn btn-primary" id="source-submit-btn">Save</button>
-            </div>
-        </form>
-    </div>
-
-    <!-- Add/Edit Target Modal -->
-    <div id="target-modal" class="modal">
-        <div class="modal-header">
-            <h3 id="target-modal-title">Add Target Environment</h3>
-            <button class="close-btn" onclick="closeModal()">&times;</button>
-        </div>
-        <form id="target-form" onsubmit="saveTarget(event)">
-            <input type="hidden" id="target-id">
-            <div class="form-group">
-                <label for="target-name">Name</label>
-                <input type="text" id="target-name" required>
-            </div>
-            <div class="form-group">
-                <label for="target-type">Type</label>
-                <select id="target-type" required onchange="updateTargetConfigFields()">
-                    <option value="vmware">VMware vCenter</option>
                     <option value="aws">AWS</option>
                     <option value="gcp">Google Cloud Platform</option>
                     <option value="azure">Microsoft Azure</option>
                 </select>
             </div>
-            <div id="target-config-fields">
-                <!-- Dynamic fields based on target type -->
+            <div id="environment-config-fields">
+                <!-- Dynamic fields based on environment type -->
             </div>
             <div class="form-actions">
                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button type="submit" class="btn btn-primary" id="target-submit-btn">Save</button>
+                <button type="submit" class="btn btn-primary" id="environment-submit-btn">Save</button>
             </div>
         </form>
     </div>
