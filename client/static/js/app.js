@@ -103,24 +103,52 @@ function loadPageData(page) {
     }
 }
 
-// Environment Tabs
-function showEnvTab(tab) {
-    document.querySelectorAll('.env-tab-content').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('#environments-page .tab-btn').forEach(b => b.classList.remove('active'));
+// Unified Environments
+async function loadEnvironments() {
+    try {
+        const envs = await api.getEnvironments();
+        const tbody = document.querySelector('#environments-table tbody');
 
-    document.getElementById(`${tab}-tab`).classList.add('active');
-    event.target.classList.add('active');
+        const typeLabels = {
+            'vmware': 'VMware vCenter',
+            'vmware-vxrail': 'VMware vXRAIL',
+            'aws': 'AWS',
+            'gcp': 'Google Cloud',
+            'azure': 'Azure',
+        };
 
-    if (tab === 'sources') {
-        loadSources();
-    } else {
-        loadTargets();
+        tbody.innerHTML = (envs || []).map(e => {
+            const config = e.config ? (typeof e.config === 'string' ? JSON.parse(e.config) : e.config) : {};
+            const hostOrRegion = config.host || config.region || config.zone || config.project_id || '-';
+            const isVMware = e.type === 'vmware' || e.type === 'vmware-vxrail';
+            const isVXRail = e.type === 'vmware-vxrail';
+
+            return `
+                <tr>
+                    <td>${e.name}</td>
+                    <td>
+                        <span class="status-badge ${isVXRail ? 'status-syncing' : 'status-ready'}">${typeLabels[e.type] || e.type}</span>
+                    </td>
+                    <td>${hostOrRegion}</td>
+                    <td>${new Date(e.created_at).toLocaleDateString()}</td>
+                    <td class="action-buttons">
+                        <button class="btn btn-small btn-secondary" onclick="editEnvironment(${e.id})">Edit</button>
+                        ${isVMware ? `<button class="btn btn-small btn-secondary" onclick="syncEnvironment(${e.id})">Sync VMs</button>` : ''}
+                        <button class="btn btn-small btn-danger" onclick="deleteEnvironment(${e.id})">Delete</button>
+                    </td>
+                </tr>
+            `;
+        }).join('') || '<tr><td colspan="5">No environments configured. Add one to get started.</td></tr>';
+
+        // Update VM source filter with VMware environments
+        const filter = document.getElementById('vm-source-filter');
+        const vmwareEnvs = (envs || []).filter(e => e.type === 'vmware' || e.type === 'vmware-vxrail');
+        filter.innerHTML = '<option value="">All Sources</option>' +
+            vmwareEnvs.map(e => `<option value="${e.id}">${e.name}</option>`).join('');
+
+    } catch (error) {
+        console.error('Failed to load environments:', error);
     }
-}
-
-function loadEnvironments() {
-    loadSources();
-    loadTargets();
 }
 
 function refreshCurrentPage() {
@@ -190,205 +218,72 @@ async function loadDashboard() {
     }
 }
 
-// Sources
-async function loadSources() {
+// Environment Management
+function showAddEnvironmentModal() {
+    document.getElementById('environment-form').reset();
+    document.getElementById('environment-id').value = '';
+    document.getElementById('environment-modal-title').textContent = 'Add Environment';
+    document.getElementById('environment-submit-btn').textContent = 'Add Environment';
+    updateEnvironmentConfigFields();
+    openModal('environment-modal');
+}
+
+async function editEnvironment(id) {
     try {
-        const sources = await api.getSources();
-        const tbody = document.querySelector('#sources-table tbody');
-        tbody.innerHTML = (sources || []).map(s => `
-            <tr>
-                <td>${s.name}</td>
-                <td>${s.type === 'vmware-vxrail' ? 'VMware vXRAIL' : 'VMware vCenter'}</td>
-                <td>${s.host}</td>
-                <td>${s.datacenter || '-'}</td>
-                <td>${s.type === 'vmware-vxrail' ? '<span class="status-badge status-syncing">Yes</span>' : '-'}</td>
-                <td class="action-buttons">
-                    <button class="btn btn-small btn-secondary" onclick="editSource(${s.id})">Edit</button>
-                    <button class="btn btn-small btn-secondary" onclick="syncSource(${s.id})">Sync</button>
-                    <button class="btn btn-small btn-warning" onclick="convertSourceToTarget(${s.id})" title="Convert to Target">Swap</button>
-                    <button class="btn btn-small btn-danger" onclick="deleteSource(${s.id})">Delete</button>
-                </td>
-            </tr>
-        `).join('') || '<tr><td colspan="6">No source environments</td></tr>';
+        const env = await api.getEnvironment(id);
+        document.getElementById('environment-id').value = env.id;
+        document.getElementById('environment-name').value = env.name;
+        document.getElementById('environment-type').value = env.type;
+        updateEnvironmentConfigFields();
 
-        // Update VM filter
-        const filter = document.getElementById('vm-source-filter');
-        filter.innerHTML = '<option value="">All Sources</option>' +
-            (sources || []).map(s => `<option value="${s.id}">${s.name}</option>`).join('');
-
-    } catch (error) {
-        console.error('Failed to load sources:', error);
-    }
-}
-
-function showAddSourceModal() {
-    document.getElementById('source-form').reset();
-    document.getElementById('source-id').value = '';
-    document.getElementById('source-modal-title').textContent = 'Add Source Environment';
-    document.getElementById('source-submit-btn').textContent = 'Add Source';
-    document.getElementById('source-password').required = true;
-    document.getElementById('source-password').placeholder = '';
-    openModal('source-modal');
-}
-
-async function editSource(id) {
-    try {
-        const source = await api.getSource(id);
-        document.getElementById('source-id').value = source.id;
-        document.getElementById('source-name').value = source.name;
-        document.getElementById('source-type').value = source.type;
-        document.getElementById('source-host').value = source.host;
-        document.getElementById('source-username').value = source.username || '';
-        document.getElementById('source-password').value = '';
-        document.getElementById('source-password').required = false;
-        document.getElementById('source-password').placeholder = 'Leave blank to keep existing';
-        document.getElementById('source-datacenter').value = source.datacenter || '';
-        document.getElementById('source-cluster').value = source.cluster || '';
-        document.getElementById('source-modal-title').textContent = 'Edit Source Environment';
-        document.getElementById('source-submit-btn').textContent = 'Save Changes';
-        openModal('source-modal');
-    } catch (error) {
-        alert('Failed to load source: ' + error.message);
-    }
-}
-
-async function saveSource(event) {
-    event.preventDefault();
-    const id = document.getElementById('source-id').value;
-    const data = {
-        name: document.getElementById('source-name').value,
-        type: document.getElementById('source-type').value,
-        host: document.getElementById('source-host').value,
-        username: document.getElementById('source-username').value,
-        datacenter: document.getElementById('source-datacenter').value,
-        cluster: document.getElementById('source-cluster').value,
-    };
-
-    const password = document.getElementById('source-password').value;
-    if (password) {
-        data.password = password;
-    }
-
-    try {
-        if (id) {
-            await api.updateSource(id, data);
-        } else {
-            data.password = password;
-            await api.createSource(data);
-        }
-        closeModal();
-        loadSources();
-    } catch (error) {
-        alert('Failed to save source: ' + error.message);
-    }
-}
-
-async function syncSource(id) {
-    try {
-        const result = await api.syncSource(id);
-        alert(`Sync started. ${result.vm_count || 0} VMs found.`);
-        loadVMs();
-        loadSchedules();
-    } catch (error) {
-        alert('Failed to sync: ' + error.message);
-    }
-}
-
-async function deleteSource(id) {
-    if (!confirm('Are you sure you want to delete this source environment?')) return;
-    try {
-        await api.deleteSource(id);
-        loadSources();
-    } catch (error) {
-        alert('Failed to delete: ' + error.message);
-    }
-}
-
-async function syncAllSources() {
-    const sources = await api.getSources();
-    for (const source of sources || []) {
-        try {
-            await api.syncSource(source.id);
-        } catch (error) {
-            console.error(`Failed to sync ${source.name}:`, error);
-        }
-    }
-    loadVMs();
-    loadSchedules();
-}
-
-// Targets
-async function loadTargets() {
-    try {
-        const targets = await api.getTargets();
-        const tbody = document.querySelector('#targets-table tbody');
-        tbody.innerHTML = (targets || []).map(t => {
-            const config = t.config ? (typeof t.config === 'string' ? JSON.parse(t.config) : t.config) : {};
-            const hostOrRegion = config.host || config.region || config.zone || config.resource_group || '-';
-            return `
-                <tr>
-                    <td>${t.name}</td>
-                    <td>${t.type}</td>
-                    <td>${hostOrRegion}</td>
-                    <td>${new Date(t.created_at).toLocaleDateString()}</td>
-                    <td class="action-buttons">
-                        <button class="btn btn-small btn-secondary" onclick="editTarget(${t.id})">Edit</button>
-                        ${t.type === 'vmware' ? `<button class="btn btn-small btn-warning" onclick="convertTargetToSource(${t.id})" title="Convert to Source">Swap</button>` : ''}
-                        <button class="btn btn-small btn-danger" onclick="deleteTarget(${t.id})">Delete</button>
-                    </td>
-                </tr>
-            `;
-        }).join('') || '<tr><td colspan="5">No target environments</td></tr>';
-    } catch (error) {
-        console.error('Failed to load targets:', error);
-    }
-}
-
-function showAddTargetModal() {
-    document.getElementById('target-form').reset();
-    document.getElementById('target-id').value = '';
-    document.getElementById('target-modal-title').textContent = 'Add Target Environment';
-    document.getElementById('target-submit-btn').textContent = 'Add Target';
-    updateTargetConfigFields();
-    openModal('target-modal');
-}
-
-async function editTarget(id) {
-    try {
-        const target = await api.getTarget(id);
-        document.getElementById('target-id').value = target.id;
-        document.getElementById('target-name').value = target.name;
-        document.getElementById('target-type').value = target.type;
-        updateTargetConfigFields();
-
-        // Populate config fields if we have config data
-        if (target.config) {
-            const config = typeof target.config === 'string' ? JSON.parse(target.config) : target.config;
-            Object.keys(config).forEach(key => {
-                const input = document.querySelector(`#target-config-fields [name="${key}"]`);
-                if (input) {
-                    input.value = config[key];
-                }
-            });
+        // Populate config fields
+        if (env.config) {
+            const config = typeof env.config === 'string' ? JSON.parse(env.config) : env.config;
+            setTimeout(() => {
+                Object.keys(config).forEach(key => {
+                    const input = document.querySelector(`#environment-config-fields [name="${key}"]`);
+                    if (input) {
+                        input.value = config[key];
+                    }
+                });
+            }, 0);
         }
 
-        document.getElementById('target-modal-title').textContent = 'Edit Target Environment';
-        document.getElementById('target-submit-btn').textContent = 'Save Changes';
-        openModal('target-modal');
+        document.getElementById('environment-modal-title').textContent = 'Edit Environment';
+        document.getElementById('environment-submit-btn').textContent = 'Save Changes';
+        openModal('environment-modal');
     } catch (error) {
-        alert('Failed to load target: ' + error.message);
+        alert('Failed to load environment: ' + error.message);
     }
 }
 
-function updateTargetConfigFields() {
-    const type = document.getElementById('target-type').value;
-    const container = document.getElementById('target-config-fields');
+function updateEnvironmentConfigFields() {
+    const type = document.getElementById('environment-type').value;
+    const container = document.getElementById('environment-config-fields');
 
     const fields = {
         vmware: `
             <div class="form-group">
                 <label>Host</label>
-                <input type="text" name="host" required>
+                <input type="text" name="host" placeholder="vcenter.example.com" required>
+            </div>
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" name="username" required>
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" name="password" placeholder="Leave blank to keep existing">
+            </div>
+            <div class="form-group">
+                <label>Datacenter</label>
+                <input type="text" name="datacenter" required>
+            </div>
+        `,
+        'vmware-vxrail': `
+            <div class="form-group">
+                <label>Host</label>
+                <input type="text" name="host" placeholder="vcenter.example.com" required>
             </div>
             <div class="form-group">
                 <label>Username</label>
@@ -458,14 +353,14 @@ function updateTargetConfigFields() {
     container.innerHTML = fields[type] || '';
 }
 
-async function saveTarget(event) {
+async function saveEnvironment(event) {
     event.preventDefault();
-    const id = document.getElementById('target-id').value;
-    const type = document.getElementById('target-type').value;
+    const id = document.getElementById('environment-id').value;
+    const type = document.getElementById('environment-type').value;
 
     // Collect config fields
     const config = {};
-    const inputs = document.querySelectorAll('#target-config-fields input, #target-config-fields textarea');
+    const inputs = document.querySelectorAll('#environment-config-fields input, #environment-config-fields textarea');
     inputs.forEach(input => {
         if (input.value) {
             config[input.name] = input.value;
@@ -474,31 +369,54 @@ async function saveTarget(event) {
 
     try {
         const data = {
-            name: document.getElementById('target-name').value,
+            name: document.getElementById('environment-name').value,
             type: type,
             config: config,
         };
 
         if (id) {
-            await api.updateTarget(id, data);
+            await api.updateEnvironment(id, data);
         } else {
-            await api.createTarget(data);
+            await api.createEnvironment(data);
         }
         closeModal();
-        loadTargets();
+        loadEnvironments();
     } catch (error) {
-        alert('Failed to save target: ' + error.message);
+        alert('Failed to save environment: ' + error.message);
     }
 }
 
-async function deleteTarget(id) {
-    if (!confirm('Are you sure you want to delete this target environment?')) return;
+async function syncEnvironment(id) {
     try {
-        await api.deleteTarget(id);
-        loadTargets();
+        const result = await api.syncEnvironment(id);
+        alert(`Sync completed. ${result.vm_count || 0} VMs found.`);
+        loadVMs();
+    } catch (error) {
+        alert('Failed to sync: ' + error.message);
+    }
+}
+
+async function deleteEnvironment(id) {
+    if (!confirm('Are you sure you want to delete this environment?')) return;
+    try {
+        await api.deleteEnvironment(id);
+        loadEnvironments();
     } catch (error) {
         alert('Failed to delete: ' + error.message);
     }
+}
+
+async function syncAllEnvironments() {
+    const envs = await api.getEnvironments();
+    const vmwareEnvs = (envs || []).filter(e => e.type === 'vmware' || e.type === 'vmware-vxrail');
+    for (const env of vmwareEnvs) {
+        try {
+            await api.syncEnvironment(env.id);
+        } catch (error) {
+            console.error(`Failed to sync ${env.name}:`, error);
+        }
+    }
+    loadVMs();
 }
 
 // VMs
@@ -534,8 +452,8 @@ async function showSizeEstimation(vmId) {
     try {
         // Get VM info to check if from vXRAIL
         const vm = await api.getVM(vmId);
-        const sources = await api.getSources();
-        const source = sources.find(s => s.id === vm.source_env_id);
+        const envs = await api.getEnvironments();
+        const source = envs.find(e => e.id === vm.source_env_id);
         const isVXRail = source?.type === 'vmware-vxrail';
 
         const results = await Promise.all([
@@ -580,27 +498,25 @@ async function showSizeEstimation(vmId) {
 
 // Batch vXRAIL Estimation
 async function showBatchEstimationModal() {
-    const [sources, targets] = await Promise.all([
-        api.getSources(),
-        api.getTargets(),
-    ]);
+    const envs = await api.getEnvironments();
 
-    const vxrailSources = (sources || []).filter(s => s.type === 'vmware-vxrail');
+    const vxrailSources = (envs || []).filter(e => e.type === 'vmware-vxrail');
+    const targetEnvs = envs || [];
 
     const sourceFilter = document.getElementById('batch-source-filter');
     sourceFilter.innerHTML = '<option value="">Select vXRAIL Source...</option>' +
-        vxrailSources.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+        vxrailSources.map(e => `<option value="${e.id}">${e.name}</option>`).join('');
 
     if (vxrailSources.length === 0) {
-        sourceFilter.innerHTML = '<option value="">No vXRAIL sources configured</option>';
+        sourceFilter.innerHTML = '<option value="">No vXRAIL environments configured</option>';
     }
 
     const targetFilter = document.getElementById('batch-target-filter');
     targetFilter.innerHTML = '<option value="">Select Target...</option>' +
-        (targets || []).map(t => `<option value="${t.id}" data-type="${t.type}" data-name="${t.name}">${t.name} (${t.type})</option>`).join('');
+        targetEnvs.map(e => `<option value="${e.id}" data-type="${e.type}" data-name="${e.name}">${e.name} (${e.type})</option>`).join('');
 
-    if ((targets || []).length === 0) {
-        targetFilter.innerHTML = '<option value="">No targets configured</option>';
+    if (targetEnvs.length === 0) {
+        targetFilter.innerHTML = '<option value="">No environments configured</option>';
     }
 
     document.getElementById('batch-vm-list').innerHTML = '<p style="color: var(--text-secondary);">Select a source environment to load VMs</p>';
@@ -746,19 +662,23 @@ async function loadMigrations() {
 }
 
 async function showCreateMigrationModal() {
-    // Load VMs, sources, and targets for selects
-    const [vms, sources, targets] = await Promise.all([
+    // Load VMs and environments for selects
+    const [vms, envs] = await Promise.all([
         api.getVMs(),
-        api.getSources(),
-        api.getTargets(),
+        api.getEnvironments(),
     ]);
+
+    // VMware environments can be sources (have VMs to migrate)
+    const vmwareEnvs = (envs || []).filter(e => e.type === 'vmware' || e.type === 'vmware-vxrail');
+    // All environments can be targets
+    const allEnvs = envs || [];
 
     document.getElementById('migration-vm').innerHTML = (vms || [])
         .map(vm => `<option value="${vm.id}">${vm.name}</option>`).join('');
-    document.getElementById('migration-source').innerHTML = (sources || [])
-        .map(s => `<option value="${s.id}">${s.name}</option>`).join('');
-    document.getElementById('migration-target').innerHTML = (targets || [])
-        .map(t => `<option value="${t.id}">${t.name} (${t.type})</option>`).join('');
+    document.getElementById('migration-source').innerHTML = vmwareEnvs
+        .map(e => `<option value="${e.id}">${e.name} (${e.type})</option>`).join('');
+    document.getElementById('migration-target').innerHTML = allEnvs
+        .map(e => `<option value="${e.id}">${e.name} (${e.type})</option>`).join('');
 
     openModal('create-migration-modal');
 }
@@ -981,55 +901,6 @@ async function loadActivityLogs() {
     }
 }
 
-// Environment Swap Functions
-async function convertSourceToTarget(sourceId) {
-    if (!confirm('Convert this source environment to a target? This will copy the configuration to targets.')) return;
-
-    try {
-        const source = await api.getSource(sourceId);
-        // Create target with same VMware config
-        await api.createTarget({
-            name: source.name + ' (Target)',
-            type: 'vmware',
-            config: {
-                host: source.host,
-                username: source.username,
-                datacenter: source.datacenter,
-            },
-        });
-        alert('Source environment copied to targets. You can now use it as a migration target.');
-        loadEnvironments();
-        // Switch to targets tab
-        showEnvTab('targets');
-    } catch (error) {
-        alert('Failed to convert: ' + error.message);
-    }
-}
-
-async function convertTargetToSource(targetId) {
-    if (!confirm('Convert this target environment to a source? This will copy the configuration to sources.')) return;
-
-    try {
-        const target = await api.getTarget(targetId);
-        const config = target.config ? (typeof target.config === 'string' ? JSON.parse(target.config) : target.config) : {};
-
-        // Create source with VMware config
-        await api.createSource({
-            name: target.name + ' (Source)',
-            type: 'vmware',
-            host: config.host || '',
-            username: config.username || '',
-            password: '', // User will need to set password
-            datacenter: config.datacenter || '',
-        });
-        alert('Target environment copied to sources. Please edit to set the password.');
-        loadEnvironments();
-        // Switch to sources tab
-        showEnvTab('sources');
-    } catch (error) {
-        alert('Failed to convert: ' + error.message);
-    }
-}
 
 // CSV Export Functions
 function downloadCSV(filename, csvContent) {

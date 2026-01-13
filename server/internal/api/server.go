@@ -82,6 +82,14 @@ func (s *Server) Router() *mux.Router {
 	protected.HandleFunc("/schedules/{id}", s.getScheduledTask).Methods("GET")
 	protected.HandleFunc("/schedules/{id}/cancel", s.cancelScheduledTask).Methods("POST")
 
+	// Unified environments (source or target)
+	protected.HandleFunc("/environments", s.listEnvironments).Methods("GET")
+	protected.HandleFunc("/environments", s.createEnvironment).Methods("POST")
+	protected.HandleFunc("/environments/{id}", s.getEnvironment).Methods("GET")
+	protected.HandleFunc("/environments/{id}", s.updateEnvironment).Methods("PUT")
+	protected.HandleFunc("/environments/{id}", s.deleteEnvironment).Methods("DELETE")
+	protected.HandleFunc("/environments/{id}/sync", s.syncEnvironment).Methods("POST")
+
 	// Admin routes
 	admin := api.PathPrefix("/admin").Subrouter()
 	admin.Use(s.authMiddleware)
