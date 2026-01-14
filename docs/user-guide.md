@@ -198,12 +198,28 @@ Before migrating, estimate the target size:
 
 1. Click **Estimate Size** on a VM
 2. View size comparisons across targets:
-   - Source size
-   - Estimated target size
-   - Size difference
-   - Notes about the estimation
+   - **vSAN Reported Size** - What vCenter shows (includes RAID overhead)
+   - **Logical/Primary Data** - Actual unique data (RAID overhead removed)
+   - **Estimated Migration Size** - Final estimate after all factors
+   - **Change %** - Percentage change from reported size
+   - **Factors Applied** - Explanation of adjustments
 
-**VXRail Consideration**: VXRail deployments include vSAN overhead (approximately 10%) that may not apply to other targets.
+#### VXRail/vSAN Considerations
+
+VXRail deployments use vSAN, which significantly affects reported vs actual sizes:
+
+| Factor | Impact |
+|--------|--------|
+| **RAID-1 (FTT=1)** | 50% reduction (data is mirrored) |
+| **RAID-5 (FTT=1)** | 25% reduction (erasure coding) |
+| **Deduplication** | Data may expand 20-60% |
+| **Compression** | Data may expand 20-30% |
+
+For accurate VXRail estimates:
+- Use the **Batch Estimate** feature for multiple VMs
+- For best results, use the standalone `vxrail_size_estimator.py` script
+
+See [Size Estimation Guide](size-estimation.md) for detailed methodology.
 
 ---
 

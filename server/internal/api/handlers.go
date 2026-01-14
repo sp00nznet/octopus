@@ -416,8 +416,14 @@ func (s *Server) getVM(w http.ResponseWriter, r *http.Request) {
 func (s *Server) estimateVMSize(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	var req struct {
-		TargetType string `json:"target_type"`
-		IsVXRail   bool   `json:"is_vxrail"`
+		TargetType         string  `json:"target_type"`
+		IsVXRail           bool    `json:"is_vxrail"`
+		RAIDPolicy         string  `json:"raid_policy"`          // raid1_ftt1, raid5_ftt1, raid6_ftt2, etc.
+		DedupEnabled       bool    `json:"dedup_enabled"`        // Is deduplication enabled
+		CompressionEnabled bool    `json:"compression_enabled"`  // Is compression enabled
+		DedupRatio         float64 `json:"dedup_ratio"`          // Actual dedup ratio (e.g., 1.5)
+		CompressionRatio   float64 `json:"compression_ratio"`    // Actual compression ratio
+		HasSnapshots       bool    `json:"has_snapshots"`        // Does VM have snapshots
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -435,7 +441,22 @@ func (s *Server) estimateVMSize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	estimation := sync.EstimateSize(vm.DiskSizeGB, float64(vm.MemoryMB)/1024, vm.CPUCount, req.TargetType, req.IsVXRail)
+	// Build VXRail config from request
+	config := sync.VXRailConfig{
+		RAIDPolicy:         req.RAIDPolicy,
+		DedupEnabled:       req.DedupEnabled,
+		CompressionEnabled: req.CompressionEnabled,
+		DedupRatio:         req.DedupRatio,
+		CompressionRatio:   req.CompressionRatio,
+		HasSnapshots:       req.HasSnapshots,
+	}
+
+	// Default RAID policy if not specified
+	if config.RAIDPolicy == "" {
+		config.RAIDPolicy = "raid1_ftt1"
+	}
+
+	estimation := sync.EstimateSizeWithConfig(vm.DiskSizeGB, float64(vm.MemoryMB)/1024, vm.CPUCount, req.TargetType, req.IsVXRail, config)
 
 	// Store estimation
 	_, err = s.db.Exec(`

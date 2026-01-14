@@ -454,36 +454,60 @@ async function showSizeEstimation(vmId) {
         const source = envs.find(e => e.id === vm.source_env_id);
         const isVXRail = source?.type === 'vmware-vxrail';
 
+        // Build VXRail config (defaults - could be enhanced with actual vSAN detection)
+        const vxrailConfig = isVXRail ? {
+            raidPolicy: 'raid1_ftt1',  // Default to RAID-1 FTT=1
+            dedupEnabled: false,
+            compressionEnabled: false,
+            hasSnapshots: false,
+        } : null;
+
         const results = await Promise.all([
-            api.estimateVMSize(vmId, 'vmware', isVXRail),
-            api.estimateVMSize(vmId, 'aws', isVXRail),
-            api.estimateVMSize(vmId, 'gcp', isVXRail),
-            api.estimateVMSize(vmId, 'azure', isVXRail),
+            api.estimateVMSize(vmId, 'vmware', vxrailConfig),
+            api.estimateVMSize(vmId, 'aws', vxrailConfig),
+            api.estimateVMSize(vmId, 'gcp', vxrailConfig),
+            api.estimateVMSize(vmId, 'azure', vxrailConfig),
         ]);
 
         content.innerHTML = `
             <div class="size-estimation-result">
                 <h4>${vm.name} - Size Estimations</h4>
-                ${isVXRail ? '<p style="color: var(--warning-color); margin-bottom: 1rem;"><strong>vXRAIL Source:</strong> Sizes adjusted for RAID-1 overhead (typically 50% reduction)</p>' : ''}
+                ${isVXRail ? `
+                    <div style="background: var(--warning-color-bg, rgba(255,152,0,0.1)); border: 1px solid var(--warning-color); border-radius: 0.375rem; padding: 1rem; margin-bottom: 1rem;">
+                        <strong style="color: var(--warning-color);">VXRail/vSAN Source Detected</strong>
+                        <p style="margin: 0.5rem 0 0 0; font-size: 0.875rem;">
+                            Estimates account for RAID overhead removal (RAID-1 = 50% reduction).
+                            If dedup/compression is enabled on your cluster, actual sizes may vary.
+                            Use the standalone <code>vxrail_size_estimator.py</code> script for accurate vSAN-aware estimates.
+                        </p>
+                    </div>
+                ` : ''}
                 ${results.map((r, i) => {
                     const targets = ['VMware (Standard)', 'AWS', 'GCP', 'Azure'];
-                    const savings = r.source_size_gb > 0 ? ((r.source_size_gb - r.estimated_size_gb) / r.source_size_gb * 100).toFixed(1) : 0;
+                    const changeColor = r.change_percent < 0 ? 'var(--success-color)' : 'var(--warning-color)';
+                    const changeLabel = r.change_percent < 0 ? 'Reduction' : 'Increase';
                     return `
                         <div class="target-estimation" style="margin-bottom: 1rem; padding: 1rem; background: var(--background); border-radius: 0.375rem;">
                             <h5 style="margin-bottom: 0.5rem;">${targets[i]}</h5>
                             <div class="stat">
-                                <span class="stat-label">Source Size (Reported)</span>
+                                <span class="stat-label">vSAN Reported Size</span>
                                 <span class="stat-value">${r.source_size_gb.toFixed(2)} GB</span>
                             </div>
+                            ${r.logical_size_gb ? `
                             <div class="stat">
-                                <span class="stat-label">Estimated Actual Size</span>
+                                <span class="stat-label">Logical/Primary Data</span>
+                                <span class="stat-value">${r.logical_size_gb.toFixed(2)} GB</span>
+                            </div>
+                            ` : ''}
+                            <div class="stat">
+                                <span class="stat-label">Estimated Migration Size</span>
                                 <span class="stat-value">${r.estimated_size_gb.toFixed(2)} GB</span>
                             </div>
                             <div class="stat">
-                                <span class="stat-label">Estimated Savings</span>
-                                <span class="stat-value" style="color: var(--success-color);">${savings}%</span>
+                                <span class="stat-label">${changeLabel}</span>
+                                <span class="stat-value" style="color: ${changeColor};">${Math.abs(r.change_percent || 0).toFixed(1)}%</span>
                             </div>
-                            ${r.notes ? `<div class="notes" style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);">${r.notes}</div>` : ''}
+                            ${r.notes ? `<div class="notes" style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);"><strong>Factors:</strong> ${r.notes}</div>` : ''}
                         </div>
                     `;
                 }).join('')}
@@ -570,50 +594,67 @@ async function runBatchEstimation() {
 
     const resultsDiv = document.getElementById('batch-results');
     const tbody = document.querySelector('#batch-results-table tbody');
-    tbody.innerHTML = '<tr><td colspan="4">Calculating...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5">Calculating...</td></tr>';
     resultsDiv.style.display = 'block';
     document.getElementById('batch-target-name').textContent = `→ ${targetName} (${targetType})`;
 
+    // VXRail config for batch estimation (defaults - RAID-1 FTT=1)
+    const vxrailConfig = {
+        raidPolicy: 'raid1_ftt1',
+        dedupEnabled: false,
+        compressionEnabled: false,
+        hasSnapshots: false,
+    };
+
     const results = [];
     let totalSource = 0;
+    let totalLogical = 0;
     let totalEstimated = 0;
 
     for (const cb of checkboxes) {
         try {
-            const estimation = await api.estimateVMSize(cb.value, targetType, true);
+            const estimation = await api.estimateVMSize(cb.value, targetType, vxrailConfig);
             results.push({
                 name: cb.dataset.name,
                 source: estimation.source_size_gb,
+                logical: estimation.logical_size_gb || estimation.source_size_gb,
                 estimated: estimation.estimated_size_gb,
+                change: estimation.change_percent || 0,
+                notes: estimation.notes || '',
             });
             totalSource += estimation.source_size_gb;
+            totalLogical += estimation.logical_size_gb || estimation.source_size_gb;
             totalEstimated += estimation.estimated_size_gb;
         } catch (error) {
             results.push({
                 name: cb.dataset.name,
                 source: parseFloat(cb.dataset.size),
+                logical: parseFloat(cb.dataset.size) / 2,
                 estimated: parseFloat(cb.dataset.size) * 0.5,
+                change: -50,
                 error: true,
             });
         }
     }
 
     tbody.innerHTML = results.map(r => {
-        const savings = r.source > 0 ? ((r.source - r.estimated) / r.source * 100).toFixed(1) : 0;
+        const changeColor = r.change < 0 ? 'var(--success-color)' : 'var(--warning-color)';
         return `
             <tr${r.error ? ' style="color: var(--warning-color);"' : ''}>
-                <td>${r.name}${r.error ? ' (estimated)' : ''}</td>
+                <td>${r.name}${r.error ? ' (fallback)' : ''}</td>
                 <td>${r.source.toFixed(2)}</td>
+                <td>${r.logical.toFixed(2)}</td>
                 <td>${r.estimated.toFixed(2)}</td>
-                <td>${savings}%</td>
+                <td style="color: ${changeColor};">${r.change.toFixed(1)}%</td>
             </tr>
         `;
     }).join('');
 
-    const totalSavings = totalSource > 0 ? ((totalSource - totalEstimated) / totalSource * 100).toFixed(1) : 0;
+    const totalChange = totalSource > 0 ? ((totalEstimated - totalSource) / totalSource * 100).toFixed(1) : 0;
     document.getElementById('batch-total-source').textContent = totalSource.toFixed(2) + ' GB';
+    document.getElementById('batch-total-logical').textContent = totalLogical.toFixed(2) + ' GB';
     document.getElementById('batch-total-estimated').textContent = totalEstimated.toFixed(2) + ' GB';
-    document.getElementById('batch-total-savings').textContent = totalSavings + '%';
+    document.getElementById('batch-total-savings').textContent = totalChange + '%';
 }
 
 async function startMigrationForVM(vmId) {

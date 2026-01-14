@@ -346,7 +346,7 @@ Authorization: Bearer <token>
 
 ### Estimate VM Size
 
-Get size estimates for migrating to different targets.
+Get size estimates for migrating to different targets with organic factor adjustments.
 
 ```http
 POST /vms/:id/estimate
@@ -355,19 +355,61 @@ Content-Type: application/json
 
 {
   "target_type": "aws",
-  "is_vxrail": false
+  "is_vxrail": true,
+  "raid_policy": "raid1_ftt1",
+  "dedup_enabled": true,
+  "compression_enabled": true,
+  "dedup_ratio": 1.5,
+  "compression_ratio": 1.25,
+  "has_snapshots": false
 }
 ```
+
+**Request Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target_type` | string | Yes | Target platform: `vmware`, `aws`, `gcp`, `azure` |
+| `is_vxrail` | boolean | No | Source is VXRail/vSAN (enables organic factor calculation) |
+| `raid_policy` | string | No | vSAN RAID policy: `raid1_ftt1`, `raid1_ftt2`, `raid5_ftt1`, `raid6_ftt2`, `none` |
+| `dedup_enabled` | boolean | No | Whether deduplication is enabled on source cluster |
+| `compression_enabled` | boolean | No | Whether compression is enabled on source cluster |
+| `dedup_ratio` | float | No | Actual dedup ratio (e.g., 1.5 for 1.5:1). If not provided, uses estimate |
+| `compression_ratio` | float | No | Actual compression ratio. If not provided, uses estimate |
+| `has_snapshots` | boolean | No | Whether VM has snapshots (affects consolidation estimate) |
+
+**RAID Policy Overhead:**
+
+| Policy | Overhead | Description |
+|--------|----------|-------------|
+| `raid1_ftt1` | 2.0x | RAID-1 with FTT=1 (mirror) |
+| `raid1_ftt2` | 3.0x | RAID-1 with FTT=2 (triple mirror) |
+| `raid5_ftt1` | 1.33x | RAID-5 with FTT=1 (erasure coding) |
+| `raid6_ftt2` | 1.5x | RAID-6 with FTT=2 (erasure coding) |
+| `none` | 1.0x | No RAID/FTT=0 |
 
 **Response:**
 ```json
 {
   "source_size_gb": 100.5,
-  "estimated_size_gb": 101.0,
-  "size_difference_gb": 0.5,
-  "notes": "AWS EBS GP3 volumes. Size rounded up to nearest GiB."
+  "logical_size_gb": 50.25,
+  "estimated_size_gb": 84.42,
+  "size_difference_gb": -16.08,
+  "change_percent": -16.0,
+  "notes": "Primary data (÷2.00 RAID); Dedup expansion ×1.50; Compression expansion ×1.25"
 }
 ```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source_size_gb` | float | Original size reported by vCenter (includes RAID overhead) |
+| `logical_size_gb` | float | Primary/logical data size (RAID overhead removed) |
+| `estimated_size_gb` | float | Final migration estimate after all adjustments |
+| `size_difference_gb` | float | Difference from source size |
+| `change_percent` | float | Percentage change from source size |
+| `notes` | string | Explanation of factors applied to calculation |
 
 ---
 

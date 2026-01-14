@@ -399,9 +399,10 @@
                     <thead>
                         <tr>
                             <th>VM Name</th>
-                            <th>vXRAIL Size (GB)</th>
-                            <th>Est. on Target (GB)</th>
-                            <th>Savings</th>
+                            <th>vSAN Reported (GB)</th>
+                            <th>Logical Data (GB)</th>
+                            <th>Est. Migration (GB)</th>
+                            <th>Change %</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -409,6 +410,7 @@
                         <tr style="font-weight: bold; background: var(--background);">
                             <td>Total</td>
                             <td id="batch-total-source">-</td>
+                            <td id="batch-total-logical">-</td>
                             <td id="batch-total-estimated">-</td>
                             <td id="batch-total-savings">-</td>
                         </tr>
