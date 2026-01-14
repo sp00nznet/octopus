@@ -81,10 +81,11 @@
 <td width="50%">
 
 ### 📊 Size Estimation
-- **Cross-Platform Sizing** - Compare target sizes
-- **VXRail Support** - vSAN overhead calculation
+- **Cross-Platform Sizing** - Compare target sizes across VMware, AWS, GCP, Azure
+- **VXRail/vSAN Support** - Accurate RAID overhead calculation (RAID-1, RAID-5, RAID-6)
+- **Organic Factors** - Dedup/compression expansion, snapshot consolidation
+- **Standalone Script** - `vxrail_size_estimator.py` for direct vCenter queries
 - **Cost Estimation** - Cloud pricing estimates
-- **Optimization Tips** - Right-sizing guidance
 
 </td>
 </tr>
@@ -335,6 +336,51 @@ azure_defaults:
 
 ---
 
+## 📐 VXRail/vSAN Size Estimation
+
+When migrating from VXRail/vSAN to plain ESXi or cloud targets, storage sizes change due to several factors:
+
+### Estimation Factors
+
+| Factor | Impact | Description |
+|--------|--------|-------------|
+| **RAID Overhead** | 25-67% reduction | RAID-1 (2x), RAID-5 (1.33x), RAID-6 (1.5x) overhead removed |
+| **Deduplication** | 20-60% expansion | Deduplicated data expands when copied |
+| **Compression** | 20-30% expansion | Compressed data expands when copied |
+| **Snapshots** | 10% reduction | Snapshots consolidate during migration |
+| **VM Swap** | 5% reduction | Swap files regenerated on target |
+
+### Using the Web Interface
+
+The web interface provides size estimation with organic factor adjustments:
+1. Navigate to **VMs** section
+2. Click **Estimate Size** on any VM
+3. View breakdown: vSAN Reported → Logical Data → Migration Estimate
+
+### Using the Standalone Script
+
+For accurate vSAN-aware estimates, use the standalone Python script:
+
+```bash
+# Install dependency
+pip install pyvmomi
+
+# Run estimation (prompts for password)
+python vxrail_size_estimator.py --vcenter vcenter.example.com --username admin@vsphere.local
+
+# Output saved to: vxrail_estimate_<vcenter>_<timestamp>.csv
+```
+
+The script connects directly to vCenter and:
+- Auto-detects vSAN cluster configuration
+- Queries actual RAID policy, dedup/compression settings
+- Calculates accurate migration estimates
+- Exports CSV with full breakdown
+
+See [Size Estimation Guide](docs/size-estimation.md) for detailed methodology.
+
+---
+
 ## 🔌 API Reference
 
 ### Authentication
@@ -410,6 +456,7 @@ octopus/
 │   ├── 📄 install.ps1            # Windows installer
 │   └── 📄 install.bat            # Windows batch wrapper
 ├── 📁 docs/                      # Documentation
+├── 📄 vxrail_size_estimator.py   # Standalone VXRail size estimator
 ├── 📄 Makefile                   # Build automation
 └── 📄 README.md                  # This file
 ```

@@ -8,6 +8,7 @@ Welcome to the Octopus documentation. This guide will help you install, configur
 |----------|-------------|
 | [Installation Guide](installation.md) | How to install Octopus |
 | [User Guide](user-guide.md) | How to use Octopus |
+| [Size Estimation Guide](size-estimation.md) | VXRail/vSAN size estimation methodology |
 | [API Reference](api-reference.md) | REST API documentation |
 | [Architecture](architecture.md) | Technical architecture |
 

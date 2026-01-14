@@ -174,10 +174,25 @@ class OctopusAPI {
         return this.request(`/vms/${id}`);
     }
 
-    async estimateVMSize(id, targetType, isVXRail = false) {
+    async estimateVMSize(id, targetType, vxrailConfig = null) {
+        const body = {
+            target_type: targetType,
+            is_vxrail: vxrailConfig !== null,
+        };
+
+        // Add VXRail-specific configuration if provided
+        if (vxrailConfig) {
+            body.raid_policy = vxrailConfig.raidPolicy || 'raid1_ftt1';
+            body.dedup_enabled = vxrailConfig.dedupEnabled || false;
+            body.compression_enabled = vxrailConfig.compressionEnabled || false;
+            body.dedup_ratio = vxrailConfig.dedupRatio || 0;
+            body.compression_ratio = vxrailConfig.compressionRatio || 0;
+            body.has_snapshots = vxrailConfig.hasSnapshots || false;
+        }
+
         return this.request(`/vms/${id}/estimate`, {
             method: 'POST',
-            body: JSON.stringify({ target_type: targetType, is_vxrail: isVXRail }),
+            body: JSON.stringify(body),
         });
     }
 

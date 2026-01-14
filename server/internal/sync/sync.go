@@ -185,73 +185,163 @@ func (s *SyncManager) powerOnTarget(vmName string) error {
 	}
 }
 
+// RAID overhead multipliers (physical space per unit of logical data)
+// VXRail/vSAN uses these policies to determine how much raw space is consumed
+var RAIDOverhead = map[string]float64{
+	"raid1_ftt1": 2.0,  // RAID-1, FTT=1: Full mirror (2 copies)
+	"raid1_ftt2": 3.0,  // RAID-1, FTT=2: Triple mirror (3 copies)
+	"raid5_ftt1": 1.33, // RAID-5, FTT=1: 3+1 erasure coding
+	"raid6_ftt2": 1.5,  // RAID-6, FTT=2: 4+2 erasure coding
+	"none":       1.0,  // No RAID/FTT=0
+}
+
+// Organic adjustment factors based on VMware documentation
+// These account for factors that cause reported size to differ from actual data
+var OrganicFactors = struct {
+	DedupExpansionLow    float64 // Low dedup ratio environments
+	DedupExpansionMedium float64 // Medium dedup ratio
+	DedupExpansionHigh   float64 // High dedup ratio
+	CompressionExpansion float64 // Typical compression ratio
+	VMSwapOverhead       float64 // Swap files don't migrate
+	SnapshotOverhead     float64 // Snapshots consolidate on migration
+}{
+	DedupExpansionLow:    1.2,
+	DedupExpansionMedium: 1.4,
+	DedupExpansionHigh:   1.6,
+	CompressionExpansion: 1.25,
+	VMSwapOverhead:       0.95,
+	SnapshotOverhead:     0.90,
+}
+
+// VXRailConfig holds VXRail-specific estimation parameters
+type VXRailConfig struct {
+	RAIDPolicy       string  `json:"raid_policy"`        // raid1_ftt1, raid5_ftt1, etc.
+	DedupEnabled     bool    `json:"dedup_enabled"`      // Is deduplication enabled
+	CompressionEnabled bool  `json:"compression_enabled"` // Is compression enabled
+	DedupRatio       float64 `json:"dedup_ratio"`        // Actual dedup ratio (e.g., 1.5 for 1.5:1)
+	CompressionRatio float64 `json:"compression_ratio"`  // Actual compression ratio
+	HasSnapshots     bool    `json:"has_snapshots"`      // Does VM have snapshots
+}
+
 // SizeEstimation represents a size estimate for a target
 type SizeEstimation struct {
-	SourceSizeGB     float64 `json:"source_size_gb"`
-	EstimatedSizeGB  float64 `json:"estimated_size_gb"`
-	SizeDifferenceGB float64 `json:"size_difference_gb"`
-	Notes            string  `json:"notes"`
+	SourceSizeGB     float64 `json:"source_size_gb"`      // What vCenter reports (includes RAID overhead)
+	LogicalSizeGB    float64 `json:"logical_size_gb"`     // Primary data only (RAID overhead removed)
+	EstimatedSizeGB  float64 `json:"estimated_size_gb"`   // Final migration estimate
+	SizeDifferenceGB float64 `json:"size_difference_gb"`  // Difference from source
+	ChangePercent    float64 `json:"change_percent"`      // Percentage change
+	Notes            string  `json:"notes"`               // Explanation of factors applied
 }
 
 // EstimateSize estimates the size of a VM on a target platform
+// This is the simple version for backward compatibility
 func EstimateSize(diskSizeGB, memoryGB float64, cpuCount int, targetType string, isVXRail bool) *SizeEstimation {
+	// Use default VXRail config (RAID-1 FTT=1, no dedup/compression)
+	config := VXRailConfig{
+		RAIDPolicy: "raid1_ftt1",
+	}
+	return EstimateSizeWithConfig(diskSizeGB, memoryGB, cpuCount, targetType, isVXRail, config)
+}
+
+// EstimateSizeWithConfig estimates size with detailed VXRail configuration
+func EstimateSizeWithConfig(diskSizeGB, memoryGB float64, cpuCount int, targetType string, isVXRail bool, config VXRailConfig) *SizeEstimation {
 	estimation := &SizeEstimation{
 		SourceSizeGB: diskSizeGB,
 	}
 
-	// VXRail vs plain ESXi differences
-	vxrailOverhead := 0.0
+	var notes []string
+	logicalSize := diskSizeGB
+
+	// Step 1: Remove RAID overhead to get logical/primary data
 	if isVXRail {
-		// VXRail has additional overhead for vSAN
-		vxrailOverhead = diskSizeGB * 0.1 // 10% overhead for vSAN metadata
-		estimation.Notes = "VXRail source detected - accounting for vSAN overhead. "
+		raidOverhead := RAIDOverhead[config.RAIDPolicy]
+		if raidOverhead == 0 {
+			raidOverhead = RAIDOverhead["raid1_ftt1"] // Default to RAID-1 FTT=1
+		}
+		logicalSize = diskSizeGB / raidOverhead
+		notes = append(notes, fmt.Sprintf("Primary data (÷%.2f RAID)", raidOverhead))
 	}
 
-	// Calculate based on target
+	estimation.LogicalSizeGB = logicalSize
+
+	// Step 2: Calculate migration size with expansion factors
+	estimatedSize := logicalSize
+
+	// Dedup expansion: deduplicated data will expand on target
+	if isVXRail && config.DedupEnabled {
+		expansion := config.DedupRatio
+		if expansion <= 1.0 {
+			expansion = OrganicFactors.DedupExpansionMedium
+		}
+		estimatedSize *= expansion
+		notes = append(notes, fmt.Sprintf("Dedup expansion ×%.2f", expansion))
+	}
+
+	// Compression expansion
+	if isVXRail && config.CompressionEnabled {
+		expansion := config.CompressionRatio
+		if expansion <= 1.0 {
+			expansion = OrganicFactors.CompressionExpansion
+		}
+		estimatedSize *= expansion
+		notes = append(notes, fmt.Sprintf("Compression expansion ×%.2f", expansion))
+	}
+
+	// VM overhead: swap files don't need to migrate
+	estimatedSize *= OrganicFactors.VMSwapOverhead
+
+	// Snapshot consolidation
+	if config.HasSnapshots {
+		estimatedSize *= OrganicFactors.SnapshotOverhead
+		notes = append(notes, "Snapshot consolidation")
+	}
+
+	// Step 3: Apply target-specific adjustments
 	switch targetType {
 	case "vmware":
-		// VMware to VMware - minimal change
-		estimation.EstimatedSizeGB = diskSizeGB - vxrailOverhead
-		estimation.Notes += "VMware target uses thin provisioning by default."
+		notes = append(notes, "VMware thin provisioning")
 
 	case "aws":
-		// AWS EBS volumes have specific size rules
-		// GP3 volumes: 1 GiB - 16 TiB
-		awsSize := diskSizeGB - vxrailOverhead
-		// Round up to nearest GiB
-		awsSize = float64(int(awsSize) + 1)
-		estimation.EstimatedSizeGB = awsSize
-		estimation.Notes += "AWS EBS GP3 volumes. Size rounded up to nearest GiB."
+		// AWS EBS rounds up to nearest GiB
+		estimatedSize = float64(int(estimatedSize) + 1)
+		notes = append(notes, "AWS EBS GP3 (rounded up)")
 
 	case "gcp":
-		// GCP persistent disks
-		gcpSize := diskSizeGB - vxrailOverhead
-		// Minimum 10 GB, round up to nearest GB
-		if gcpSize < 10 {
-			gcpSize = 10
+		// GCP minimum 10 GB, rounded up
+		if estimatedSize < 10 {
+			estimatedSize = 10
 		}
-		estimation.EstimatedSizeGB = float64(int(gcpSize) + 1)
-		estimation.Notes += "GCP Persistent Disk. Minimum 10 GiB."
+		estimatedSize = float64(int(estimatedSize) + 1)
+		notes = append(notes, "GCP Persistent Disk (min 10 GiB)")
 
 	case "azure":
-		// Azure managed disks have standard sizes
-		azureSize := diskSizeGB - vxrailOverhead
-		// Azure disk sizes: 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32767
+		// Azure aligns to standard disk tiers
 		standardSizes := []float64{4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32767}
 		for _, size := range standardSizes {
-			if size >= azureSize {
-				estimation.EstimatedSizeGB = size
+			if size >= estimatedSize {
+				estimatedSize = size
 				break
 			}
 		}
-		estimation.Notes += "Azure Managed Disk. Size aligned to standard disk tiers."
-
-	default:
-		estimation.EstimatedSizeGB = diskSizeGB
-		estimation.Notes += "Unknown target type - using source size."
+		notes = append(notes, "Azure Managed Disk tier")
 	}
 
-	estimation.SizeDifferenceGB = estimation.EstimatedSizeGB - diskSizeGB
+	estimation.EstimatedSizeGB = estimatedSize
+	estimation.SizeDifferenceGB = estimatedSize - diskSizeGB
+
+	if diskSizeGB > 0 {
+		estimation.ChangePercent = ((estimatedSize - diskSizeGB) / diskSizeGB) * 100
+	}
+
+	// Build notes string
+	notesStr := ""
+	for i, note := range notes {
+		if i > 0 {
+			notesStr += "; "
+		}
+		notesStr += note
+	}
+	estimation.Notes = notesStr
 
 	return estimation
 }
