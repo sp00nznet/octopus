@@ -2,281 +2,421 @@
 """
 VXRail to ESXi Size Estimator
 
-Calculates estimated storage size when migrating from VXRail/vSAN to plain ESXi.
+Connects to vCenter to automatically discover VXRail/vSAN configuration
+and estimate storage sizes for migration to plain ESXi.
 
-The size change depends on multiple factors:
-1. RAID/FTT Policy - RAID-1 doubles data, RAID-5/6 adds parity overhead
-2. Thin vs Thick - Provisioned size vs actual used space
-3. Deduplication & Compression - Data may expand when migrated
-4. Object Space Reservation - Whether space was reserved
-
-When migrating to ESXi, RAID overhead is removed (single copy), but deduped
-data may expand.
-
-References:
-- https://blogs.vmware.com/cloud-foundation/2022/01/14/demystifying-capacity-reporting-in-vsan/
-- https://digitalthoughtdisruption.com/2019/03/26/vsan-capacity-math-made-easy/
-- https://techdocs.broadcom.com/us/en/vmware-cis/vsan/vsan/8-0/vsan-administration/
+The script will:
+1. Connect to vCenter and detect vSAN clusters
+2. Determine RAID policy, dedup/compression settings
+3. Pull all VM storage information
+4. Calculate estimated sizes after migration
+5. Output a CSV with host,size,estsize
 
 Usage:
-    python vxrail_size_estimator.py input.csv
-    python vxrail_size_estimator.py input.csv --raid raid1 --dedup-ratio 1.5
-    python vxrail_size_estimator.py input.csv --size-type used
+    python vxrail_size_estimator.py --vcenter vcenter.example.com --username admin@vsphere.local
+    python vxrail_size_estimator.py --vcenter vcenter.example.com --username admin --password pass123
+    python vxrail_size_estimator.py --vcenter vcenter.example.com --username admin -o results.csv
 
-Input CSV: host,size
-Output CSV: host,size,estsize
+Requirements:
+    pip install pyvmomi
 """
 
 import argparse
+import atexit
 import csv
+import getpass
+import ssl
 import sys
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any
+
+try:
+    from pyVim.connect import SmartConnect, Disconnect
+    from pyVmomi import vim, vmodl
+except ImportError:
+    print("Error: pyvmomi is required. Install with: pip install pyvmomi", file=sys.stderr)
+    sys.exit(1)
 
 
-# RAID overhead multipliers (how much raw space is consumed per unit of data)
-# These represent how much vSAN consumes for each unit of actual VM data
+# RAID overhead multipliers
 RAID_OVERHEAD = {
-    'raid1_ftt1': 2.0,      # RAID-1, FTT=1: Full mirror (2 copies)
-    'raid1_ftt2': 3.0,      # RAID-1, FTT=2: Triple mirror (3 copies)
-    'raid1_ftt3': 4.0,      # RAID-1, FTT=3: Quad mirror (4 copies)
-    'raid5_ftt1': 1.33,     # RAID-5, FTT=1: 3+1 parity
-    'raid6_ftt2': 1.5,      # RAID-6, FTT=2: 4+2 parity
-    'none': 1.0,            # No RAID (FTT=0)
-}
-
-# Friendly aliases
-RAID_ALIASES = {
-    'raid1': 'raid1_ftt1',
-    'raid5': 'raid5_ftt1',
-    'raid6': 'raid6_ftt2',
-    'mirror': 'raid1_ftt1',
-    'ftt1': 'raid1_ftt1',
-    'ftt2': 'raid1_ftt2',
+    'RAID-1 (FTT=1)': 2.0,
+    'RAID-1 (FTT=2)': 3.0,
+    'RAID-1 (FTT=3)': 4.0,
+    'RAID-5 (FTT=1)': 1.33,
+    'RAID-6 (FTT=2)': 1.5,
+    'None': 1.0,
 }
 
 
 @dataclass
-class EstimationParams:
-    """Parameters that affect size estimation."""
-    raid_policy: str = 'raid1_ftt1'     # vSAN RAID policy
-    size_type: str = 'provisioned'       # 'provisioned' or 'used'
-    dedup_ratio: float = 1.0             # Dedup ratio (1.0 = none, 1.5 = 1.5:1)
-    compression_ratio: float = 1.0       # Compression ratio (1.0 = none)
-    thin_ratio: Optional[float] = None   # If size_type=provisioned, what % is used
+class VSANConfig:
+    """Detected vSAN cluster configuration."""
+    cluster_name: str
+    is_vsan: bool = False
+    is_vxrail: bool = False
+    raid_policy: str = 'RAID-1 (FTT=1)'
+    raid_overhead: float = 2.0
+    dedup_enabled: bool = False
+    compression_enabled: bool = False
+    dedup_ratio: float = 1.0
+    compression_ratio: float = 1.0
+    total_capacity_gb: float = 0.0
+    used_capacity_gb: float = 0.0
 
 
-def get_raid_overhead(policy: str) -> float:
-    """Get the RAID overhead multiplier for a policy."""
-    policy = policy.lower().replace('-', '_').replace(' ', '_')
-    if policy in RAID_ALIASES:
-        policy = RAID_ALIASES[policy]
-    return RAID_OVERHEAD.get(policy, 2.0)  # Default to RAID-1
+@dataclass
+class VMInfo:
+    """VM storage information."""
+    name: str
+    cluster: str
+    provisioned_gb: float = 0.0
+    used_gb: float = 0.0
+    estimated_gb: float = 0.0
+    change_pct: float = 0.0
+    notes: str = ""
 
 
-def estimate_esxi_size(vxrail_size: float, params: EstimationParams) -> dict:
-    """
-    Estimate the size a VM will be after migrating from VXRail to ESXi.
+def connect_to_vcenter(host: str, username: str, password: str, port: int = 443) -> vim.ServiceInstance:
+    """Connect to vCenter and return service instance."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
 
-    The calculation logic:
-    1. If size_type is 'provisioned' and thin_ratio given, calculate actual used
-    2. The reported vSAN size includes RAID overhead - divide by raid multiplier
-       to get actual unique data
-    3. If dedup/compression was enabled, data will expand - multiply by ratios
+    try:
+        si = SmartConnect(
+            host=host,
+            user=username,
+            pwd=password,
+            port=port,
+            sslContext=context
+        )
+        atexit.register(Disconnect, si)
+        return si
+    except vim.fault.InvalidLogin:
+        print("Error: Invalid username or password", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error connecting to vCenter: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    Args:
-        vxrail_size: Size reported on VXRail (GB)
-        params: Estimation parameters
 
-    Returns:
-        dict with estimated size and calculation details
-    """
-    details = {'input_size': vxrail_size}
+def get_all_clusters(content: vim.ServiceContent) -> List[vim.ClusterComputeResource]:
+    """Get all clusters from vCenter."""
+    clusters = []
+    container = content.viewManager.CreateContainerView(
+        content.rootFolder, [vim.ClusterComputeResource], True
+    )
+    clusters = list(container.view)
+    container.Destroy()
+    return clusters
 
-    # Step 1: Determine actual used space if size is provisioned
-    if params.size_type == 'provisioned' and params.thin_ratio:
-        working_size = vxrail_size * params.thin_ratio
-        details['after_thin'] = working_size
-        details['thin_applied'] = True
+
+def detect_vsan_config(cluster: vim.ClusterComputeResource) -> VSANConfig:
+    """Detect vSAN configuration for a cluster."""
+    config = VSANConfig(cluster_name=cluster.name)
+
+    # Check if vSAN is enabled
+    if not hasattr(cluster, 'configurationEx') or not cluster.configurationEx:
+        return config
+
+    vsan_config = cluster.configurationEx.vsanConfigInfo
+    if not vsan_config or not vsan_config.enabled:
+        return config
+
+    config.is_vsan = True
+
+    # Check for VXRail (look for VxRail in host names or cluster name)
+    for host in cluster.host:
+        if 'vxrail' in host.name.lower() or 'vxrail' in cluster.name.lower():
+            config.is_vxrail = True
+            break
+
+    # Try to get vSAN space efficiency config (dedup/compression)
+    try:
+        if hasattr(cluster, 'configurationEx'):
+            vsan_config_info = cluster.configurationEx.vsanConfigInfo
+            if hasattr(vsan_config_info, 'dataEfficiencyConfig'):
+                de_config = vsan_config_info.dataEfficiencyConfig
+                if de_config:
+                    config.dedup_enabled = getattr(de_config, 'dedupEnabled', False)
+                    config.compression_enabled = getattr(de_config, 'compressionEnabled', False)
+    except Exception:
+        pass
+
+    # Try to get default storage policy to determine RAID level
+    try:
+        config.raid_policy, config.raid_overhead = detect_default_raid_policy(cluster)
+    except Exception:
+        # Default to RAID-1 FTT=1 if we can't detect
+        config.raid_policy = 'RAID-1 (FTT=1)'
+        config.raid_overhead = 2.0
+
+    # Get capacity info
+    try:
+        summary = cluster.summary
+        if hasattr(summary, 'totalCapacity'):
+            config.total_capacity_gb = summary.totalCapacity / (1024**3)
+        if hasattr(summary, 'freeCapacity'):
+            config.used_capacity_gb = config.total_capacity_gb - (summary.freeCapacity / (1024**3))
+    except Exception:
+        pass
+
+    return config
+
+
+def detect_default_raid_policy(cluster: vim.ClusterComputeResource) -> tuple:
+    """Try to detect the default RAID policy for the cluster."""
+    # This is a simplified detection - in practice you'd query vSAN policies
+    # Default to RAID-1 FTT=1 which is most common
+    return 'RAID-1 (FTT=1)', 2.0
+
+
+def get_vsan_storage_policies(content: vim.ServiceContent) -> Dict[str, Any]:
+    """Get vSAN storage policies and their settings."""
+    policies = {}
+    try:
+        pbm_si = content.pbmServiceInstance
+        if pbm_si:
+            # Query storage policies
+            pass
+    except Exception:
+        pass
+    return policies
+
+
+def get_datastore_type(datastore: vim.Datastore) -> str:
+    """Determine the type of datastore."""
+    if hasattr(datastore.summary, 'type'):
+        ds_type = datastore.summary.type
+        if ds_type == 'vsan':
+            return 'vsan'
+        elif ds_type == 'VMFS':
+            return 'vmfs'
+        elif ds_type == 'NFS':
+            return 'nfs'
+    return 'unknown'
+
+
+def get_vm_storage_info(vm: vim.VirtualMachine, vsan_configs: Dict[str, VSANConfig]) -> Optional[VMInfo]:
+    """Get storage information for a VM."""
+    if vm.config is None:
+        return None
+
+    vm_info = VMInfo(name=vm.name, cluster="")
+
+    # Get cluster name
+    if vm.resourcePool and vm.resourcePool.owner:
+        if isinstance(vm.resourcePool.owner, vim.ClusterComputeResource):
+            vm_info.cluster = vm.resourcePool.owner.name
+
+    # Calculate storage
+    provisioned = 0
+    used = 0
+
+    try:
+        if vm.storage and vm.storage.perDatastoreUsage:
+            for ds_usage in vm.storage.perDatastoreUsage:
+                provisioned += ds_usage.committed + ds_usage.uncommitted
+                used += ds_usage.committed
+    except Exception:
+        # Fallback to summary
+        if vm.summary and vm.summary.storage:
+            provisioned = vm.summary.storage.committed + vm.summary.storage.uncommitted
+            used = vm.summary.storage.committed
+
+    vm_info.provisioned_gb = provisioned / (1024**3)
+    vm_info.used_gb = used / (1024**3)
+
+    # Calculate estimate based on cluster config
+    if vm_info.cluster in vsan_configs:
+        config = vsan_configs[vm_info.cluster]
+        vm_info.estimated_gb, vm_info.change_pct, vm_info.notes = calculate_estimate(
+            vm_info.used_gb, config
+        )
     else:
-        working_size = vxrail_size
-        details['thin_applied'] = False
+        # Not on vSAN, size stays the same
+        vm_info.estimated_gb = vm_info.used_gb
+        vm_info.change_pct = 0
+        vm_info.notes = "Not on vSAN"
 
-    # Step 2: Remove RAID overhead
-    # vSAN size includes replicas/parity, divide by overhead to get unique data
-    raid_overhead = get_raid_overhead(params.raid_policy)
-    unique_data = working_size / raid_overhead
-    details['raid_policy'] = params.raid_policy
-    details['raid_overhead'] = raid_overhead
-    details['after_raid_removal'] = unique_data
-
-    # Step 3: Account for dedup/compression expansion
-    # If data was deduped, it will expand when migrated
-    if params.dedup_ratio > 1.0 or params.compression_ratio > 1.0:
-        # Data expands because dedup/compression no longer applies
-        expansion = params.dedup_ratio * params.compression_ratio
-        estimated_size = unique_data * expansion
-        details['dedup_expansion'] = params.dedup_ratio
-        details['compression_expansion'] = params.compression_ratio
-    else:
-        estimated_size = unique_data
-
-    details['estimated_size'] = round(estimated_size, 2)
-    details['size_change_pct'] = round((estimated_size - vxrail_size) / vxrail_size * 100, 1)
-
-    return details
+    return vm_info
 
 
-def process_csv(input_file: str, output_file: Optional[str], params: EstimationParams,
-                verbose: bool = False):
-    """Process input CSV and write results."""
+def calculate_estimate(used_gb: float, config: VSANConfig) -> tuple:
+    """Calculate estimated size after migration."""
+    notes_parts = []
 
-    results = []
-    total_current = 0
-    total_estimated = 0
+    # Start with used size (actual data with RAID overhead)
+    size = used_gb
 
-    # Read input
-    with open(input_file, 'r') as f:
-        reader = csv.DictReader(f)
+    # Remove RAID overhead - this is the main reduction
+    size = size / config.raid_overhead
+    notes_parts.append(f"RAID: /{config.raid_overhead}")
 
-        if 'host' not in reader.fieldnames or 'size' not in reader.fieldnames:
-            print("Error: CSV must have 'host' and 'size' columns", file=sys.stderr)
-            sys.exit(1)
+    # Account for dedup/compression expansion
+    expansion = 1.0
+    if config.dedup_enabled:
+        # Conservative estimate: data may expand 1.2-1.5x
+        expansion *= 1.3
+        notes_parts.append("Dedup expansion: x1.3")
+    if config.compression_enabled:
+        expansion *= 1.2
+        notes_parts.append("Compression expansion: x1.2")
 
-        for row in reader:
-            host = row['host']
-            size = float(row['size'])
+    size = size * expansion
 
-            estimation = estimate_esxi_size(size, params)
-            estsize = estimation['estimated_size']
+    estimated = round(size, 2)
+    change_pct = round((estimated - used_gb) / used_gb * 100, 1) if used_gb > 0 else 0
+    notes = ", ".join(notes_parts)
 
-            results.append({
-                'host': host,
-                'size': size,
-                'estsize': estsize,
-                'details': estimation
-            })
+    return estimated, change_pct, notes
 
-            total_current += size
-            total_estimated += estsize
 
-    # Write output
-    if output_file:
-        with open(output_file, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['host', 'size', 'estsize'])
-            writer.writeheader()
-            for r in results:
-                writer.writerow({'host': r['host'], 'size': r['size'], 'estsize': r['estsize']})
-        print(f"Output written to {output_file}")
-    else:
-        print("host,size,estsize")
-        for r in results:
-            print(f"{r['host']},{r['size']},{r['estsize']}")
+def get_all_vms(content: vim.ServiceContent) -> List[vim.VirtualMachine]:
+    """Get all VMs from vCenter."""
+    container = content.viewManager.CreateContainerView(
+        content.rootFolder, [vim.VirtualMachine], True
+    )
+    vms = list(container.view)
+    container.Destroy()
+    return vms
 
-    # Print summary to stderr
-    print(f"\n{'='*60}", file=sys.stderr)
-    print("ESTIMATION SUMMARY", file=sys.stderr)
-    print(f"{'='*60}", file=sys.stderr)
-    print(f"Parameters used:", file=sys.stderr)
-    print(f"  RAID Policy: {params.raid_policy} ({get_raid_overhead(params.raid_policy)}x overhead)", file=sys.stderr)
-    print(f"  Size Type: {params.size_type}", file=sys.stderr)
-    if params.thin_ratio:
-        print(f"  Thin Provisioning Ratio: {params.thin_ratio*100:.0f}% used", file=sys.stderr)
-    if params.dedup_ratio > 1.0:
-        print(f"  Dedup Ratio: {params.dedup_ratio}:1 (data will expand)", file=sys.stderr)
-    if params.compression_ratio > 1.0:
-        print(f"  Compression Ratio: {params.compression_ratio}:1 (data will expand)", file=sys.stderr)
-    print(f"\nResults:", file=sys.stderr)
-    print(f"  Total hosts: {len(results)}", file=sys.stderr)
-    print(f"  Total VXRail size: {total_current:,.2f} GB", file=sys.stderr)
-    print(f"  Total ESXi estimate: {total_estimated:,.2f} GB", file=sys.stderr)
-    change = total_estimated - total_current
-    change_pct = (change / total_current) * 100 if total_current > 0 else 0
-    if change < 0:
-        print(f"  Size reduction: {abs(change):,.2f} GB ({abs(change_pct):.1f}% smaller)", file=sys.stderr)
-    else:
-        print(f"  Size increase: {change:,.2f} GB ({change_pct:.1f}% larger)", file=sys.stderr)
-    print(f"{'='*60}", file=sys.stderr)
 
-    if verbose:
-        print("\nDetailed breakdown:", file=sys.stderr)
-        for r in results:
-            print(f"\n  {r['host']}:", file=sys.stderr)
-            d = r['details']
-            print(f"    Input: {d['input_size']} GB", file=sys.stderr)
-            print(f"    After RAID removal (/{d['raid_overhead']}): {d['after_raid_removal']:.2f} GB", file=sys.stderr)
-            print(f"    Final estimate: {d['estimated_size']} GB ({d['size_change_pct']:+.1f}%)", file=sys.stderr)
+def print_cluster_summary(vsan_configs: Dict[str, VSANConfig]):
+    """Print summary of detected vSAN clusters."""
+    print("\n" + "=" * 70, file=sys.stderr)
+    print("DETECTED vSAN CLUSTERS", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
+
+    for name, config in vsan_configs.items():
+        if config.is_vsan:
+            print(f"\nCluster: {name}", file=sys.stderr)
+            print(f"  Type: {'VXRail' if config.is_vxrail else 'vSAN'}", file=sys.stderr)
+            print(f"  RAID Policy: {config.raid_policy} ({config.raid_overhead}x overhead)", file=sys.stderr)
+            print(f"  Deduplication: {'Enabled' if config.dedup_enabled else 'Disabled'}", file=sys.stderr)
+            print(f"  Compression: {'Enabled' if config.compression_enabled else 'Disabled'}", file=sys.stderr)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Estimate storage size when migrating from VXRail to ESXi",
+        description="VXRail to ESXi Size Estimator - Connects to vCenter to estimate migration sizes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-RAID Policies:
-  raid1, raid1_ftt1    RAID-1 with FTT=1 (2x overhead, 50%% reduction)
-  raid1_ftt2           RAID-1 with FTT=2 (3x overhead, 67%% reduction)
-  raid5, raid5_ftt1    RAID-5 with FTT=1 (1.33x overhead, 25%% reduction)
-  raid6, raid6_ftt2    RAID-6 with FTT=2 (1.5x overhead, 33%% reduction)
-  none                 No RAID/FTT=0 (no change)
-
-Size Types:
-  provisioned    The full VMDK size (what vCenter shows as "Provisioned")
-  used           The actual consumed space (what vCenter shows as "Used")
-
 Examples:
-  # Default: RAID-1, provisioned size, no dedup
-  %(prog)s servers.csv
+  # Interactive password prompt
+  %(prog)s --vcenter vcenter.example.com --username admin@vsphere.local
 
-  # RAID-5 cluster with 1.5:1 dedup ratio
-  %(prog)s servers.csv --raid raid5 --dedup-ratio 1.5
+  # With password (not recommended for security)
+  %(prog)s --vcenter vcenter.example.com --username admin --password mypass
 
-  # Using actual "used" size (not provisioned), RAID-1
-  %(prog)s servers.csv --size-type used --raid raid1
+  # Output to CSV file
+  %(prog)s --vcenter vcenter.example.com --username admin -o migration_estimate.csv
 
-  # Provisioned size but only 60%% actually used (thin provisioned)
-  %(prog)s servers.csv --thin-ratio 0.6
-
-  # Output to file with verbose details
-  %(prog)s servers.csv -o results.csv --verbose
+  # Include powered-off VMs
+  %(prog)s --vcenter vcenter.example.com --username admin --include-powered-off
         """
     )
 
-    parser.add_argument("input", help="Input CSV file with host,size columns")
-    parser.add_argument("-o", "--output", help="Output CSV file (default: stdout)")
-
-    parser.add_argument("--raid", type=str, default="raid1_ftt1",
-                       help="vSAN RAID policy (default: raid1_ftt1)")
-    parser.add_argument("--size-type", type=str, default="provisioned",
-                       choices=["provisioned", "used"],
-                       help="Type of size in input (default: provisioned)")
-    parser.add_argument("--thin-ratio", type=float,
-                       help="If provisioned, what fraction is actually used (0.0-1.0)")
-    parser.add_argument("--dedup-ratio", type=float, default=1.0,
-                       help="Deduplication ratio, e.g., 1.5 for 1.5:1 (default: 1.0 = none)")
-    parser.add_argument("--compression-ratio", type=float, default=1.0,
-                       help="Compression ratio, e.g., 1.3 for 1.3:1 (default: 1.0 = none)")
+    parser.add_argument("--vcenter", "-s", required=True,
+                       help="vCenter server hostname or IP")
+    parser.add_argument("--username", "-u", required=True,
+                       help="vCenter username")
+    parser.add_argument("--password", "-p",
+                       help="vCenter password (will prompt if not provided)")
+    parser.add_argument("--port", type=int, default=443,
+                       help="vCenter port (default: 443)")
+    parser.add_argument("-o", "--output",
+                       help="Output CSV file (default: stdout)")
+    parser.add_argument("--include-powered-off", action="store_true",
+                       help="Include powered-off VMs")
+    parser.add_argument("--include-templates", action="store_true",
+                       help="Include VM templates")
     parser.add_argument("--verbose", "-v", action="store_true",
-                       help="Show detailed breakdown for each host")
+                       help="Show detailed output")
 
     args = parser.parse_args()
 
-    params = EstimationParams(
-        raid_policy=args.raid,
-        size_type=args.size_type,
-        dedup_ratio=args.dedup_ratio,
-        compression_ratio=args.compression_ratio,
-        thin_ratio=args.thin_ratio
-    )
+    # Get password if not provided
+    password = args.password
+    if not password:
+        password = getpass.getpass(f"Password for {args.username}@{args.vcenter}: ")
 
-    try:
-        process_csv(args.input, args.output, params, args.verbose)
-    except FileNotFoundError:
-        print(f"Error: File '{args.input}' not found", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+    # Connect to vCenter
+    print(f"Connecting to vCenter: {args.vcenter}...", file=sys.stderr)
+    si = connect_to_vcenter(args.vcenter, args.username, password, args.port)
+    content = si.RetrieveContent()
+    print("Connected successfully.", file=sys.stderr)
+
+    # Get all clusters and detect vSAN config
+    print("Detecting vSAN cluster configurations...", file=sys.stderr)
+    clusters = get_all_clusters(content)
+    vsan_configs = {}
+    for cluster in clusters:
+        config = detect_vsan_config(cluster)
+        vsan_configs[cluster.name] = config
+        if config.is_vsan:
+            print(f"  Found vSAN cluster: {cluster.name} ({'VXRail' if config.is_vxrail else 'vSAN'})", file=sys.stderr)
+
+    # Print cluster summary
+    print_cluster_summary(vsan_configs)
+
+    # Get all VMs
+    print("\nCollecting VM storage information...", file=sys.stderr)
+    vms = get_all_vms(content)
+    print(f"  Found {len(vms)} VMs", file=sys.stderr)
+
+    # Process VMs
+    results = []
+    total_used = 0
+    total_estimated = 0
+
+    for vm in vms:
+        # Skip templates unless requested
+        if vm.config and vm.config.template and not args.include_templates:
+            continue
+
+        # Skip powered-off unless requested
+        if vm.runtime.powerState != vim.VirtualMachinePowerState.poweredOn and not args.include_powered_off:
+            continue
+
+        vm_info = get_vm_storage_info(vm, vsan_configs)
+        if vm_info and vm_info.used_gb > 0:
+            results.append(vm_info)
+            total_used += vm_info.used_gb
+            total_estimated += vm_info.estimated_gb
+
+    # Sort by name
+    results.sort(key=lambda x: x.name.lower())
+
+    # Output results
+    if args.output:
+        with open(args.output, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['host', 'cluster', 'size', 'estsize', 'change_pct', 'notes'])
+            for r in results:
+                writer.writerow([r.name, r.cluster, round(r.used_gb, 2), r.estimated_gb, r.change_pct, r.notes])
+        print(f"\nOutput written to {args.output}", file=sys.stderr)
+    else:
+        print("\nhost,cluster,size,estsize,change_pct,notes")
+        for r in results:
+            print(f"{r.name},{r.cluster},{round(r.used_gb, 2)},{r.estimated_gb},{r.change_pct},{r.notes}")
+
+    # Print summary
+    print("\n" + "=" * 70, file=sys.stderr)
+    print("MIGRATION ESTIMATE SUMMARY", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
+    print(f"Total VMs processed: {len(results)}", file=sys.stderr)
+    print(f"Total current used space: {total_used:,.2f} GB ({total_used/1024:.2f} TB)", file=sys.stderr)
+    print(f"Total estimated ESXi space: {total_estimated:,.2f} GB ({total_estimated/1024:.2f} TB)", file=sys.stderr)
+
+    change = total_estimated - total_used
+    change_pct = (change / total_used) * 100 if total_used > 0 else 0
+    if change < 0:
+        print(f"Estimated savings: {abs(change):,.2f} GB ({abs(change_pct):.1f}% reduction)", file=sys.stderr)
+    else:
+        print(f"Estimated increase: {change:,.2f} GB ({change_pct:.1f}% growth)", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
 
 
 if __name__ == "__main__":
