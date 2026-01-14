@@ -25,8 +25,10 @@ import argparse
 import atexit
 import csv
 import getpass
+import os
 import ssl
 import sys
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 
@@ -298,23 +300,40 @@ def print_cluster_summary(vsan_configs: Dict[str, VSANConfig]):
             print(f"  Compression: {'Enabled' if config.compression_enabled else 'Disabled'}", file=sys.stderr)
 
 
+def get_script_dir() -> str:
+    """Get the directory where the script is located."""
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def generate_output_filename(vcenter: str) -> str:
+    """Generate default output filename with vcenter name and timestamp."""
+    # Clean vcenter name for filename
+    clean_name = vcenter.replace('.', '_').replace(':', '_')
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return f"vxrail_estimate_{clean_name}_{timestamp}.csv"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="VXRail to ESXi Size Estimator - Connects to vCenter to estimate migration sizes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Interactive password prompt
+  # Interactive password prompt (saves CSV to script directory)
   %(prog)s --vcenter vcenter.example.com --username admin@vsphere.local
 
   # With password (not recommended for security)
   %(prog)s --vcenter vcenter.example.com --username admin --password mypass
 
-  # Output to CSV file
-  %(prog)s --vcenter vcenter.example.com --username admin -o migration_estimate.csv
+  # Custom output filename
+  %(prog)s --vcenter vcenter.example.com --username admin -o custom_name.csv
 
   # Include powered-off VMs
   %(prog)s --vcenter vcenter.example.com --username admin --include-powered-off
+
+Output:
+  CSV file is automatically saved to the script directory with format:
+  vxrail_estimate_<vcenter>_<timestamp>.csv
         """
     )
 
@@ -327,7 +346,7 @@ Examples:
     parser.add_argument("--port", type=int, default=443,
                        help="vCenter port (default: 443)")
     parser.add_argument("-o", "--output",
-                       help="Output CSV file (default: stdout)")
+                       help="Output CSV filename (default: auto-generated)")
     parser.add_argument("--include-powered-off", action="store_true",
                        help="Include powered-off VMs")
     parser.add_argument("--include-templates", action="store_true",
@@ -389,18 +408,25 @@ Examples:
     # Sort by name
     results.sort(key=lambda x: x.name.lower())
 
-    # Output results
+    # Determine output file path (always save to script directory)
+    script_dir = get_script_dir()
     if args.output:
-        with open(args.output, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['host', 'cluster', 'size', 'estsize', 'change_pct', 'notes'])
-            for r in results:
-                writer.writerow([r.name, r.cluster, round(r.used_gb, 2), r.estimated_gb, r.change_pct, r.notes])
-        print(f"\nOutput written to {args.output}", file=sys.stderr)
+        # If user provided a filename, use it but ensure it's in script dir
+        if os.path.dirname(args.output):
+            output_path = args.output  # User provided full path
+        else:
+            output_path = os.path.join(script_dir, args.output)
     else:
-        print("\nhost,cluster,size,estsize,change_pct,notes")
+        # Auto-generate filename
+        output_path = os.path.join(script_dir, generate_output_filename(args.vcenter))
+
+    # Write CSV output
+    with open(output_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['host', 'cluster', 'size', 'estsize', 'change_pct', 'notes'])
         for r in results:
-            print(f"{r.name},{r.cluster},{round(r.used_gb, 2)},{r.estimated_gb},{r.change_pct},{r.notes}")
+            writer.writerow([r.name, r.cluster, round(r.used_gb, 2), r.estimated_gb, r.change_pct, r.notes])
+    print(f"\nCSV output written to: {output_path}", file=sys.stderr)
 
     # Print summary
     print("\n" + "=" * 70, file=sys.stderr)
